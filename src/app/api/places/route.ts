@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { INITIAL_MOCK_PLACES, MockPlace } from '@/lib/mockData'
-import { normalizePlaceText } from '@/lib/validation'
+import { resolvePlace } from '@/lib/places'
 
 export const dynamic = 'force-dynamic'
 
@@ -86,17 +86,13 @@ export async function POST(request: Request) {
 
     // Try saving to DB if connected
     try {
-      const created = await prisma.place.create({
-        data: {
-          name,
-          normalizedName: normalizePlaceText(name),
-          address,
-          normalizedAddress: normalizePlaceText(address),
-          area: area || 'Quận 1',
-          latitude: 10.7769 + (Math.random() - 0.5) * 0.04,
-          longitude: 106.7009 + (Math.random() - 0.5) * 0.04,
-          externalSource: 'USER_GENERATED',
-        },
+      const created = await resolvePlace({
+        type: 'manual',
+        name,
+        address,
+        area: area || 'Quận 1',
+        latitude: 10.7769 + (Math.random() - 0.5) * 0.04,
+        longitude: 106.7009 + (Math.random() - 0.5) * 0.04,
       })
       return NextResponse.json({ success: true, place: created })
     } catch {

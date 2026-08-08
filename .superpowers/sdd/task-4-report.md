@@ -139,8 +139,8 @@ uploads validate JPEG/PNG/WebP bytes before Blob storage.
 - Local `query_place_id` and `place_id` lookup runs without an API key.
 - Distinct Google IDs remain distinct even when normalized names and addresses
   match; normalized dedupe only removes manual local duplicates.
-- Manual SHA-256 key derives from normalized name/address. Nullable unique
-  schema constraint and Prisma `upsert` make concurrent creation atomic.
+- Manual key originally used SHA-256 over normalized name/address. Final fix
+  below replaces it with an exactly SQL-compatible deterministic key.
 - External places always store `dedupeKey: null`.
 - URL percent decoding errors become `INVALID_MAPS_URL` with status 400.
 - Upload MIME must match JPEG, PNG, or WebP magic bytes; invalid/script bytes
@@ -152,7 +152,82 @@ uploads validate JPEG/PNG/WebP bytes before Blob storage.
 
 ### Concerns
 
-- Existing deployments must apply updated Prisma schema before concurrent
-  manual writes. Repository has no baseline migration directory, so this pass
-  follows existing schema-only convention rather than adding an invalid
-  standalone delta migration.
+- Existing deployments needed a real migration before concurrent manual
+  writes. Final fix below adds that migration.
+
+## Final Migration And Writer Fix - 2026-08-08
+
+### Status
+
+Added deployable PostgreSQL migration for `Place.dedupeKey`, changed
+application key generation to exactly match SQL, and routed legacy
+`POST /api/places` manual writes through canonical `resolvePlace`.
+
+### RED
+
+1. `npx tsx --test src/lib/places.test.ts src/app/api/places/route.test.ts`:
+   19 tests, 16 passed, 3 failed. Failures proved missing migration, SHA-256
+   key mismatch, and direct legacy `prisma.place.create`.
+2. Transaction regression:
+   `npx tsx --test src/lib/places.test.ts`: 18 tests, 17 passed, 1 failed
+   because migration lacked explicit `BEGIN`/`COMMIT`.
+3. Encoding regression:
+   `npx tsx --test src/lib/places.test.ts`: 18 tests, 17 passed, 1 failed
+   because SQL used database encoding instead of explicit UTF-8 conversion.
+4. Prisma migration package regression:
+   `npx tsx --test src/lib/places.test.ts`: 18 tests, 17 passed, 1 failed
+   because `prisma/migrations/migration_lock.toml` was absent.
+
+### GREEN
+
+- Focused resolver/writer tests: 19 passed, 0 failed.
+- `npm test`: exit 0; 52 passed, 0 failed.
+- Focused Task 4 lint including `src/app/api/places/route.ts` and its new
+  regression test: exit 0, no output.
+- `npx prisma format`: exit 0; schema formatted in 37 ms.
+- `npx prisma generate`: exit 0; Prisma Client 7.9.1 generated in 183 ms.
+- `npx prisma validate`: exit 0; schema valid.
+- `npm run build` with provider/blob keys unset: exit 0.
+- `git diff --check`: no whitespace errors; Windows line-ending warnings only.
+
+### Migration
+
+- Adds nullable `Place.dedupeKey`.
+- Selects oldest manual/null-external-ID Place as deterministic survivor for
+  each normalized name/address pair.
+- Repoints non-conflicting `UserSavedPlace` rows.
+- Consolidates conflicting saves by moving images and one allowed one-to-one
+  Post before deleting duplicate saves and Places.
+- Backfills every surviving manual/null-external-ID row with:
+  `UTF8 byte length(normalizedName) + ":" + normalizedName + normalizedAddress`.
+- Creates `Place_dedupeKey_key` only after duplicate cleanup and backfill.
+- Uses explicit transaction so temporary tables, table lock from
+  `ALTER TABLE`, cleanup, backfill, and unique index are atomic.
+
+### Files
+
+- `prisma/migrations/20260808010000_backfill_place_dedupe_key/migration.sql`
+- `prisma/migrations/migration_lock.toml`
+- `src/lib/places.ts`
+- `src/lib/places.test.ts`
+- `src/app/api/places/route.ts`
+- `src/app/api/places/route.test.ts`
+- `.superpowers/sdd/task-4-report.md`
+
+### Self-Review
+
+- Node uses `Buffer.byteLength(normalizedName, "utf8")`; PostgreSQL uses
+  `octet_length(convert_to("normalizedName", 'UTF8'))`. Unicode regression
+  covers a four-byte emoji.
+- Length prefix makes concatenated name/address key unambiguous without
+  requiring PostgreSQL extensions.
+- All active manual Place writers now call `resolvePlace`; remaining direct
+  `prisma.place.create` is resolver-owned external Place creation.
+- Legacy null-key and duplicate cleanup ordering is pinned by regression test.
+- No unrelated product files changed.
+
+### Concern
+
+- `DATABASE_URL` and `psql` were unavailable, so migration was not executed
+  against a live PostgreSQL instance. SQL ordering/key equivalence has focused
+  regression coverage; Prisma schema validation and production build pass.

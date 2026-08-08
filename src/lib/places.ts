@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import type { Place } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
@@ -404,9 +402,7 @@ function manualDedupeKey(
   normalizedName: string,
   normalizedAddress: string,
 ): string {
-  return createHash("sha256")
-    .update(JSON.stringify([normalizedName, normalizedAddress]))
-    .digest("hex");
+  return `${Buffer.byteLength(normalizedName, "utf8")}:${normalizedName}${normalizedAddress}`;
 }
 
 function canonicalData(

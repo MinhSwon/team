@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import type { Place } from "@prisma/client";
@@ -239,7 +240,72 @@ test("resolvePlace atomically reuses concurrent manual duplicates", async () => 
   assert.equal(first.id, second.id);
   assert.equal(store.places.length, 1);
   assert.equal(store.creates, 1);
-  assert.match(store.places[0]?.dedupeKey ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(
+    store.places[0]?.dedupeKey,
+    "12:cafe central1 main street",
+  );
+});
+
+test("resolvePlace uses the SQL-compatible manual dedupe key", async () => {
+  const store = new FakePlaceStore();
+
+  const resolved = await resolvePlace(
+    {
+      type: "manual",
+      name: "Cafe 😀",
+      address: "1 Main",
+    },
+    { store },
+  );
+
+  assert.equal(resolved.dedupeKey, "9:cafe 😀1 main");
+});
+
+test("Place dedupe migration merges legacy duplicates before backfill and uniqueness", () => {
+  const migrationLock = new URL(
+    "../../prisma/migrations/migration_lock.toml",
+    import.meta.url,
+  );
+  const migration = new URL(
+    "../../prisma/migrations/20260808010000_backfill_place_dedupe_key/migration.sql",
+    import.meta.url,
+  );
+
+  assert.equal(
+    existsSync(migrationLock),
+    true,
+    "Prisma migration lock must exist",
+  );
+  assert.match(readFileSync(migrationLock, "utf8"), /provider = "postgresql"/);
+  assert.equal(existsSync(migration), true, "dedupe migration must exist");
+  const sql = readFileSync(migration, "utf8");
+  const merge = sql.indexOf('CREATE TEMP TABLE "_manual_place_duplicates"');
+  const repoint = sql.indexOf('UPDATE "UserSavedPlace"');
+  const removeDuplicates = sql.indexOf('DELETE FROM "Place"');
+  const backfill = sql.indexOf('UPDATE "Place"');
+  const uniqueIndex = sql.indexOf(
+    'CREATE UNIQUE INDEX "Place_dedupeKey_key"',
+  );
+  const begin = sql.indexOf("BEGIN;");
+  const commit = sql.lastIndexOf("COMMIT;");
+
+  assert.match(sql, /ADD COLUMN "dedupeKey" TEXT/);
+  assert.match(
+    sql,
+    /octet_length\(convert_to\("normalizedName", 'UTF8'\)\)::text \|\| ':' \|\| "normalizedName" \|\| "normalizedAddress"/,
+  );
+  assert.match(sql, /WHERE "externalPlaceId" IS NULL/);
+  assert.match(sql, /UPDATE "SavedPlaceImage"/);
+  assert.match(sql, /UPDATE "Post"/);
+  assert.match(sql, /DELETE FROM "UserSavedPlace"/);
+  assert.match(sql, /"dedupeKey" IS NULL/);
+  assert.equal(begin, 0);
+  assert.ok(merge >= 0);
+  assert.ok(repoint > merge);
+  assert.ok(removeDuplicates > repoint);
+  assert.ok(backfill > removeDuplicates);
+  assert.ok(uniqueIndex > backfill);
+  assert.ok(commit > uniqueIndex);
 });
 
 test("resolvePlace returns manual confirmation fields for an unresolved Maps URL", async () => {
