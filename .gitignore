@@ -40,4 +40,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# local feature worktrees
+.worktrees/
+
 /src/generated/prisma
