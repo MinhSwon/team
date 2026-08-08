@@ -16,6 +16,10 @@ import { useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 
 import type { PlaceCandidate, PlaceInput } from "@/lib/places";
+import {
+  PLACE_LIMITS,
+  assertPlaceReview,
+} from "@/lib/validation";
 
 type Method = "search" | "mapsUrl" | "manual";
 type Busy = "search" | "resolve" | "upload" | null;
@@ -488,8 +492,10 @@ function ConfirmationForm({
         <textarea
           className="min-h-28 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500 focus:border-amber-400"
           id="place-review"
-          maxLength={2000}
-          onChange={(event) => setReview(event.target.value)}
+          maxLength={PLACE_LIMITS.review}
+          onChange={(event) =>
+            setReview(assertPlaceReview(event.target.value))
+          }
           placeholder="What should friends know?"
           value={review}
         />

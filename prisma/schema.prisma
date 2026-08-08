@@ -107,7 +107,7 @@ model Place {
   longitude         Float?
   externalSource    String?
   externalPlaceId   String?
-  dedupeKey         String?          @unique
+  dedupeKey         String?          @unique @db.Char(32)
   website           String?
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt

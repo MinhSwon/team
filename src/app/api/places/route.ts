@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { INITIAL_MOCK_PLACES, MockPlace } from '@/lib/mockData'
-import { resolvePlace } from '@/lib/places'
+import { PlaceResolutionError, resolvePlace } from '@/lib/places'
+import { PLACE_LIMITS } from '@/lib/validation'
 
 export const dynamic = 'force-dynamic'
 
@@ -10,6 +11,10 @@ export async function GET(request: Request) {
   const category = searchParams.get('category')
   const query = searchParams.get('query')
   const area = searchParams.get('area')
+
+  if (query && query.length > PLACE_LIMITS.query) {
+    return NextResponse.json({ success: false, error: 'Search query is too long' }, { status: 400 })
+  }
 
   try {
     const places = await prisma.place.findMany()
@@ -95,7 +100,10 @@ export async function POST(request: Request) {
         longitude: 106.7009 + (Math.random() - 0.5) * 0.04,
       })
       return NextResponse.json({ success: true, place: created })
-    } catch {
+    } catch (error) {
+      if (error instanceof PlaceResolutionError) {
+        return NextResponse.json({ success: false, error: error.message }, { status: error.status })
+      }
       const newMockPlace: MockPlace = {
         id: 'p_' + Date.now(),
         name,

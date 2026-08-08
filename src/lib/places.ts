@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
+
 import type { Place } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
-import { normalizePlaceText } from "@/lib/validation";
+import { PLACE_LIMITS, normalizePlaceText } from "@/lib/validation";
 
 export type PlaceCandidate =
   | {
@@ -96,6 +98,17 @@ function optionalNumber(value: unknown): number | null | undefined {
   return value;
 }
 
+function requiredText(value: unknown, maxLength: number): string {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > maxLength
+  ) {
+    invalidInput();
+  }
+  return value;
+}
+
 export function parsePlaceInput(value: unknown): PlaceInput {
   const input = record(value);
   if (!input || typeof input.type !== "string") invalidInput();
@@ -106,16 +119,10 @@ export function parsePlaceInput(value: unknown): PlaceInput {
   }
 
   if (input.type === "manual") {
-    if (
-      typeof input.name !== "string" ||
-      typeof input.address !== "string"
-    ) {
-      invalidInput();
-    }
     return {
       type: "manual",
-      name: input.name,
-      address: input.address,
+      name: requiredText(input.name, PLACE_LIMITS.name),
+      address: requiredText(input.address, PLACE_LIMITS.address),
       area: optionalText(input.area),
       latitude: optionalNumber(input.latitude),
       longitude: optionalNumber(input.longitude),
@@ -127,14 +134,15 @@ export function parsePlaceInput(value: unknown): PlaceInput {
     const candidate = record(input.candidate);
     if (
       !candidate ||
-      typeof candidate.source !== "string" ||
-      typeof candidate.name !== "string" ||
-      !candidate.name.trim() ||
-      typeof candidate.address !== "string" ||
-      !candidate.address.trim()
+      typeof candidate.source !== "string"
     ) {
       invalidInput();
     }
+    const name = requiredText(candidate.name, PLACE_LIMITS.name);
+    const address = requiredText(
+      candidate.address,
+      PLACE_LIMITS.address,
+    );
 
     if (candidate.source === "local") {
       if (typeof candidate.id !== "string" || !candidate.id.trim()) {
@@ -145,8 +153,8 @@ export function parsePlaceInput(value: unknown): PlaceInput {
         candidate: {
           source: "local",
           id: candidate.id,
-          name: candidate.name,
-          address: candidate.address,
+          name,
+          address,
           area: optionalText(candidate.area) ?? null,
           latitude: optionalNumber(candidate.latitude) ?? null,
           longitude: optionalNumber(candidate.longitude) ?? null,
@@ -167,8 +175,8 @@ export function parsePlaceInput(value: unknown): PlaceInput {
       candidate: {
         source: "google",
         externalPlaceId: candidate.externalPlaceId,
-        name: candidate.name,
-        address: candidate.address,
+        name,
+        address,
         area: optionalText(candidate.area),
         latitude: optionalNumber(candidate.latitude),
         longitude: optionalNumber(candidate.longitude),
@@ -241,7 +249,15 @@ function googleCandidate(value: unknown): GooglePlaceCandidate | null {
   const name = text(displayName?.text);
   const address = text(item?.formattedAddress);
 
-  if (!externalPlaceId || !name || !address) return null;
+  if (
+    !externalPlaceId ||
+    !name ||
+    name.length > PLACE_LIMITS.name ||
+    !address ||
+    address.length > PLACE_LIMITS.address
+  ) {
+    return null;
+  }
 
   return {
     source: "google",
@@ -402,7 +418,9 @@ function manualDedupeKey(
   normalizedName: string,
   normalizedAddress: string,
 ): string {
-  return `${Buffer.byteLength(normalizedName, "utf8")}:${normalizedName}${normalizedAddress}`;
+  const input = `${Buffer.byteLength(normalizedName, "utf8")}:${normalizedName}${normalizedAddress}`;
+  // ponytail: MD5 birthday ceiling is 2^64 keys; move to SHA-256/CHAR(64) if collision evidence appears.
+  return createHash("md5").update(input, "utf8").digest("hex");
 }
 
 function canonicalData(
@@ -416,16 +434,11 @@ function canonicalData(
     website?: string | null;
   },
 ): CanonicalPlaceData {
-  const name = candidate.name.trim();
-  const address = candidate.address.trim();
-
-  if (!name || !address) {
-    throw new PlaceResolutionError(
-      "Name and address are required",
-      "INVALID_INPUT",
-      400,
-    );
-  }
+  const name = requiredText(candidate.name, PLACE_LIMITS.name).trim();
+  const address = requiredText(
+    candidate.address,
+    PLACE_LIMITS.address,
+  ).trim();
 
   return {
     name,
@@ -484,6 +497,7 @@ export async function searchPlaces(
   query: string,
   dependencies: PlaceDependencies = {},
 ): Promise<PlaceCandidate[]> {
+  if (query.length > PLACE_LIMITS.query) invalidInput();
   const normalizedQuery = normalizePlaceText(query);
   if (!normalizedQuery) return [];
 

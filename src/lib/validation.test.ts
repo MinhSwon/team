@@ -7,6 +7,7 @@ import {
   normalizePlaceText,
   normalizeUsername,
 } from "./validation";
+import * as validation from "./validation";
 
 test("normalizeUsername trims and lowercases usernames", () => {
   assert.equal(normalizeUsername("  Alice.Smith  "), "alice.smith");
@@ -34,4 +35,17 @@ test("assertRating rejects invalid ratings", () => {
   for (const value of [0, 6, "5", 1.5]) {
     assert.throws(() => assertRating(value), ValidationError);
   }
+});
+
+test("place review validation accepts 2000 characters and rejects 2001", () => {
+  const assertPlaceReview = Reflect.get(validation, "assertPlaceReview");
+
+  assert.equal(typeof assertPlaceReview, "function");
+  if (typeof assertPlaceReview !== "function") return;
+
+  assert.equal(assertPlaceReview("r".repeat(2000)), "r".repeat(2000));
+  assert.throws(
+    () => assertPlaceReview("r".repeat(2001)),
+    ValidationError,
+  );
 });

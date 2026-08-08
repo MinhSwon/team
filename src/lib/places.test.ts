@@ -242,7 +242,7 @@ test("resolvePlace atomically reuses concurrent manual duplicates", async () => 
   assert.equal(store.creates, 1);
   assert.equal(
     store.places[0]?.dedupeKey,
-    "12:cafe central1 main street",
+    "ab0ed6911380036d0fa29f783f449b7a",
   );
 });
 
@@ -258,7 +258,7 @@ test("resolvePlace uses the SQL-compatible manual dedupe key", async () => {
     { store },
   );
 
-  assert.equal(resolved.dedupeKey, "9:cafe 😀1 main");
+  assert.equal(resolved.dedupeKey, "2a65afbee4ba5954c1e36e179ba713bc");
 });
 
 test("Place dedupe migration merges legacy duplicates before backfill and uniqueness", () => {
@@ -270,6 +270,14 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
     "../../prisma/migrations/20260808010000_backfill_place_dedupe_key/migration.sql",
     import.meta.url,
   );
+  const baseline = new URL(
+    "../../prisma/migrations/20260808000000_init/migration.sql",
+    import.meta.url,
+  );
+  const migrationReadme = new URL(
+    "../../prisma/migrations/README.md",
+    import.meta.url,
+  );
 
   assert.equal(
     existsSync(migrationLock),
@@ -277,6 +285,23 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
     "Prisma migration lock must exist",
   );
   assert.match(readFileSync(migrationLock, "utf8"), /provider = "postgresql"/);
+  assert.equal(existsSync(baseline), true, "baseline migration must exist");
+  const baselineSql = readFileSync(baseline, "utf8");
+  assert.match(baselineSql, /CREATE TABLE "User"/);
+  assert.match(baselineSql, /CREATE TABLE "Place"/);
+  assert.match(baselineSql, /CREATE TABLE "Notification"/);
+  assert.doesNotMatch(baselineSql, /dedupeKey/);
+  assert.equal(
+    existsSync(migrationReadme),
+    true,
+    "existing database baseline instructions must exist",
+  );
+  const migrationInstructions = readFileSync(migrationReadme, "utf8");
+  assert.match(
+    migrationInstructions,
+    /prisma migrate resolve --applied 20260808000000_init/,
+  );
+  assert.match(migrationInstructions, /verify.*schema/i);
   assert.equal(existsSync(migration), true, "dedupe migration must exist");
   const sql = readFileSync(migration, "utf8");
   const merge = sql.indexOf('CREATE TEMP TABLE "_manual_place_duplicates"');
@@ -286,26 +311,94 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   const uniqueIndex = sql.indexOf(
     'CREATE UNIQUE INDEX "Place_dedupeKey_key"',
   );
+  const conflictAbort = sql.indexOf(
+    "Cannot merge duplicate saved places without deleting posts",
+  );
+  const firstUserDataMutation = sql.indexOf('UPDATE "UserSavedPlace"');
   const begin = sql.indexOf("BEGIN;");
   const commit = sql.lastIndexOf("COMMIT;");
 
-  assert.match(sql, /ADD COLUMN "dedupeKey" TEXT/);
+  assert.match(sql, /ADD COLUMN "dedupeKey" CHAR\(32\)/);
   assert.match(
     sql,
-    /octet_length\(convert_to\("normalizedName", 'UTF8'\)\)::text \|\| ':' \|\| "normalizedName" \|\| "normalizedAddress"/,
+    /md5\(\s*octet_length\(convert_to\("normalizedName", 'UTF8'\)\)::text\s*\|\|\s*':'\s*\|\|\s*"normalizedName"\s*\|\|\s*"normalizedAddress"\s*\)/,
   );
+  assert.match(sql, /server_encoding/);
   assert.match(sql, /WHERE "externalPlaceId" IS NULL/);
   assert.match(sql, /UPDATE "SavedPlaceImage"/);
   assert.match(sql, /UPDATE "Post"/);
+  assert.match(sql, /"rating"\s*=\s*metadata\."rating"/);
+  assert.match(sql, /"review"\s*=\s*metadata\."review"/);
+  assert.match(sql, /"sourcePostId"\s*=\s*metadata\."sourcePostId"/);
+  assert.match(sql, /"tags"\s*=\s*metadata\."tags"/);
+  assert.match(sql, /array_agg\(\s*"rating"/);
+  assert.match(sql, /array_agg\(\s*"review"/);
+  assert.match(sql, /array_agg\(\s*"sourcePostId"/);
+  assert.match(sql, /SELECT DISTINCT tag/);
+  assert.match(sql, /RAISE EXCEPTION[\s\S]*conflicting_post_ids/);
   assert.match(sql, /DELETE FROM "UserSavedPlace"/);
+  assert.doesNotMatch(sql, /DELETE FROM "Post"/);
+  assert.doesNotMatch(sql, /DELETE FROM "SavedPlaceImage"/);
   assert.match(sql, /"dedupeKey" IS NULL/);
   assert.equal(begin, 0);
+  assert.ok(conflictAbort > 0);
+  assert.ok(firstUserDataMutation > conflictAbort);
   assert.ok(merge >= 0);
   assert.ok(repoint > merge);
   assert.ok(removeDuplicates > repoint);
   assert.ok(backfill > removeDuplicates);
   assert.ok(uniqueIndex > backfill);
   assert.ok(commit > uniqueIndex);
+});
+
+test("parsePlaceInput enforces exact place name and address limits", () => {
+  assert.doesNotThrow(() =>
+    parsePlaceInput({
+      type: "manual",
+      name: "n".repeat(160),
+      address: "a".repeat(500),
+    }),
+  );
+
+  for (const input of [
+    {
+      type: "manual",
+      name: "n".repeat(161),
+      address: "Address",
+    },
+    {
+      type: "manual",
+      name: "Name",
+      address: "a".repeat(501),
+    },
+    {
+      type: "search",
+      candidate: {
+        source: "google",
+        externalPlaceId: "ChIJ-limit",
+        name: "n".repeat(161),
+        address: "Address",
+      },
+    },
+  ]) {
+    assert.throws(
+      () => parsePlaceInput(input),
+      (error: unknown) =>
+        error instanceof PlaceResolutionError &&
+        error.code === "INVALID_INPUT",
+    );
+  }
+});
+
+test("searchPlaces rejects queries over 200 characters", async () => {
+  await assert.rejects(
+    searchPlaces("q".repeat(201), {
+      store: new FakePlaceStore(),
+    }),
+    (error: unknown) =>
+      error instanceof PlaceResolutionError &&
+      error.code === "INVALID_INPUT",
+  );
 });
 
 test("resolvePlace returns manual confirmation fields for an unresolved Maps URL", async () => {
@@ -439,6 +532,32 @@ test("searchPlaces maps Google Text Search results with mocked fetch", async () 
       website: "https://provider.example",
     },
   ]);
+});
+
+test("searchPlaces drops provider candidates over name or address limits", async () => {
+  const fetchFn: typeof fetch = async () =>
+    Response.json({
+      places: [
+        {
+          id: "ChIJ-long-name",
+          displayName: { text: "n".repeat(161) },
+          formattedAddress: "Address",
+        },
+        {
+          id: "ChIJ-long-address",
+          displayName: { text: "Name" },
+          formattedAddress: "a".repeat(501),
+        },
+      ],
+    });
+
+  const results = await searchPlaces("provider", {
+    apiKey: "test-key",
+    fetch: fetchFn,
+    store: new FakePlaceStore(),
+  });
+
+  assert.deepEqual(results, []);
 });
 
 test("searchPlaces falls back to local results when provider fails", async () => {

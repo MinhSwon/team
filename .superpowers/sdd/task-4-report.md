@@ -231,3 +231,113 @@ application key generation to exactly match SQL, and routed legacy
 - `DATABASE_URL` and `psql` were unavailable, so migration was not executed
   against a live PostgreSQL instance. SQL ordering/key equivalence has focused
   regression coverage; Prisma schema validation and production build pass.
+
+## Final Migration Review Fix - 2026-08-08
+
+### Status
+
+Added a complete pre-dedupe baseline migration and kept the data-preserving
+`dedupeKey` migration as the second migration. Manual keys now use a fixed
+`CHAR(32)` MD5 with identical Node/PostgreSQL input bytes. Legacy duplicate
+cleanup merges saved-place metadata and related records, or aborts with
+conflicting saved-place/Post IDs before any user-data mutation.
+
+### RED
+
+1. `npx tsx --test src/lib/places.test.ts src/lib/validation.test.ts src/app/api/places/route.test.ts`:
+   29 tests, 22 passed, 7 failed. Failures covered the missing baseline,
+   unbounded key, missing name/address/query/review limits, and the legacy
+   route accepting oversized fields.
+2. Provider boundary regression:
+   `npx tsx --test src/lib/places.test.ts`: 21 tests, 20 passed, 1 failed
+   because oversized Google provider candidates escaped validation.
+
+### GREEN
+
+- Focused tests:
+  `npx tsx --test src/lib/places.test.ts src/lib/validation.test.ts src/app/api/places/route.test.ts`:
+  30 passed, 0 failed.
+- `npm test`: exit 0; 57 passed, 0 failed.
+- Focused Task 4 lint:
+  `npx eslint "src/lib/places.ts" "src/lib/places.test.ts" "src/lib/validation.ts" "src/lib/validation.test.ts" "src/app/api/places/route.ts" "src/app/api/places/route.test.ts" "src/app/api/places/search/route.ts" "src/app/api/places/resolve/route.ts" "src/app/api/uploads/route.ts" "src/app/api/uploads/route.test.ts" "src/components/AddPlaceModal.tsx" "src/app/(app)/add/page.tsx" "src/app/(app)/layout.test.ts"`:
+  exit 0, no output.
+- `npx prisma format`: exit 0; schema formatted in 35 ms.
+- `npx prisma generate`: exit 0; Prisma Client 7.9.1 generated in 170 ms.
+- `npx prisma validate`: exit 0; schema valid.
+- Baseline static check:
+  `npx prisma migrate diff --from-empty --to-schema <schema from commit 3473690> --script`:
+  exit 0; generated SQL matches
+  `20260808000000_init/migration.sql` after newline normalization
+  (`BASELINE_DIFF_MATCH`).
+- Current schema static check:
+  `npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script`:
+  exit 0; output contains `dedupeKey CHAR(32)` and
+  `Place_dedupeKey_key` (`CURRENT_EMPTY_DIFF_VALID`, SHA-256
+  `49E1B626D5DD43660EF409506D7D5E9A4BEE7502BBF377D07EAEC1FFBD202E17`).
+- `npm run build` with `GOOGLE_MAPS_API_KEY` and
+  `BLOB_READ_WRITE_TOKEN` explicitly unset: exit 0. Next.js generated all 21
+  static pages and completed production optimization.
+- `git diff --check`: no whitespace errors; Git reported Windows line-ending
+  conversion notices only.
+
+### Migration
+
+- `20260808000000_init` creates the complete social schema from empty and does
+  not contain `dedupeKey`.
+- `20260808010000_backfill_place_dedupe_key` runs in one transaction, verifies
+  UTF-8 server encoding, and adds nullable `CHAR(32)`.
+- Duplicate Place and UserSavedPlace survivors are deterministic.
+- Each merged field uses the latest non-null value ordered by `updatedAt`,
+  `createdAt`, then ID. Tags become a sorted distinct union.
+- Every image moves to the surviving saved place. A sole Post moves. More than
+  one Post aborts before user-data mutation with survivor and sorted Post IDs.
+- Duplicate saves and Places are deleted only after metadata and relationships
+  move. The migration never deletes Posts or SavedPlaceImages.
+- Remaining manual/null-external-ID Places receive:
+  `md5(UTF8 byte length(normalizedName) + ":" + normalizedName + normalizedAddress)`.
+  The unique index is created last.
+- `prisma/migrations/README.md` documents fresh deployment and the required
+  verified-baseline procedure for existing databases.
+
+### Files
+
+- `prisma/migrations/20260808000000_init/migration.sql`
+- `prisma/migrations/20260808010000_backfill_place_dedupe_key/migration.sql`
+- `prisma/migrations/README.md`
+- `prisma/schema.prisma`
+- `src/lib/places.ts`
+- `src/lib/places.test.ts`
+- `src/lib/validation.ts`
+- `src/lib/validation.test.ts`
+- `src/app/api/places/route.ts`
+- `src/app/api/places/route.test.ts`
+- `src/app/api/places/search/route.ts`
+- `src/components/AddPlaceModal.tsx`
+- `.superpowers/sdd/task-4-report.md`
+
+### Self-Review
+
+- Baseline is generated from the exact schema at commit `3473690`, before
+  `dedupeKey`; fresh databases no longer depend on an ALTER-only history.
+- Existing databases must verify schema parity and mark only the baseline
+  applied before deploying the delta. Instructions explicitly state that
+  `migrate resolve` does not create or repair schema objects.
+- Node uses `Buffer.byteLength(..., "utf8")` and PostgreSQL uses
+  `octet_length(convert_to(..., 'UTF8'))`; ASCII and four-byte Unicode test
+  vectors pin parity.
+- MD5 is non-security dedupe only. A `ponytail:` comment records the theoretical
+  collision ceiling and SHA-256/`CHAR(64)` upgrade path.
+- Limits are exact: name 160, address 500, query 200, review 2000.
+- All active manual Place writers route through `resolvePlace`; resolver-owned
+  Prisma create/upsert operations are the only direct Place writes.
+- No `any` added. Unrelated product files and untracked SDD files remain
+  untouched.
+
+### Concerns
+
+- No PostgreSQL server, shadow database, `DATABASE_URL`, or `psql` is available,
+  so the migration chain was not executed against a live database. Static
+  verification covers exact baseline generation, current schema diff, SQL
+  ordering/data-preservation assertions, Prisma validation, tests, and build.
+- Build logs warn that `BETTER_AUTH_SECRET` uses its default value in this local
+  environment. Build still exits 0; deployment must set a production secret.

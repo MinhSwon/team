@@ -3,13 +3,14 @@ import {
   UnauthorizedError,
 } from "@/lib/current-user";
 import { searchPlaces } from "@/lib/places";
+import { PLACE_LIMITS } from "@/lib/validation";
 
 export async function GET(request: Request) {
   try {
     await requireCurrentUser();
     const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
 
-    if (query.length > 200) {
+    if (query.length > PLACE_LIMITS.query) {
       return Response.json(
         { error: "Search query is too long" },
         { status: 400 },
