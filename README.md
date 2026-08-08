@@ -20,6 +20,13 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Configuration
+
+Copy `.env.example` to `.env` and set required values. Image saves require
+`BLOB_READ_WRITE_TOKEN` and `BLOB_PUBLIC_HOST`. Set `BLOB_PUBLIC_HOST` to the
+exact hostname returned by Vercel Blob, without a scheme, path, or trailing
+slash.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

@@ -152,7 +152,8 @@ export class PostError extends Error {
       | "INVALID_INPUT"
       | "INVALID_CURSOR"
       | "NOT_FOUND"
-      | "FORBIDDEN",
+      | "FORBIDDEN"
+      | "IMAGE_UPLOADS_NOT_CONFIGURED",
     public readonly status: number,
   ) {
     super(message);
@@ -201,7 +202,28 @@ function tags(value: unknown): string[] {
   return [...new Set(value.map((tag) => tag.trim()).filter(Boolean))];
 }
 
-function image(value: unknown): SavedImageInput {
+function configuredBlobHost(): string {
+  const host = process.env.BLOB_PUBLIC_HOST?.trim().toLowerCase();
+  if (!host) {
+    throw new PostError(
+      "Image uploads are not configured",
+      "IMAGE_UPLOADS_NOT_CONFIGURED",
+      503,
+    );
+  }
+  try {
+    if (new URL(`https://${host}`).hostname !== host) throw new Error();
+  } catch {
+    throw new PostError(
+      "Image uploads are not configured",
+      "IMAGE_UPLOADS_NOT_CONFIGURED",
+      503,
+    );
+  }
+  return host;
+}
+
+function image(value: unknown, trustedHost: string): SavedImageInput {
   const item =
     typeof value === "string" ? { url: value, caption: null } : record(value);
   if (
@@ -219,17 +241,10 @@ function image(value: unknown): SavedImageInput {
   } catch {
     throw new PostError("Invalid saved image URL", "INVALID_INPUT", 400);
   }
-  const configuredHost = process.env.BLOB_PUBLIC_HOST
-    ?.trim()
-    .toLowerCase()
-    .replace(/\.$/, "");
-  const trustedHost = configuredHost
-    ? url.hostname === configuredHost
-    : url.hostname.endsWith(".public.blob.vercel-storage.com");
   const imagePath = /\.(?:jpe?g|png|webp)$/i.test(url.pathname);
   if (
     url.protocol !== "https:" ||
-    !trustedHost ||
+    url.hostname !== trustedHost ||
     !imagePath ||
     url.username ||
     url.password ||
@@ -252,7 +267,9 @@ function images(value: unknown): SavedImageInput[] {
   if (!Array.isArray(value)) {
     throw new PostError("Images must be a list", "INVALID_INPUT", 400);
   }
-  return value.map(image);
+  if (value.length === 0) return [];
+  const trustedHost = configuredBlobHost();
+  return value.map((value) => image(value, trustedHost));
 }
 
 function sourcePostId(value: unknown): string | null {

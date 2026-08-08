@@ -200,9 +200,8 @@ Modified:
   state text. Manual fields remain editable, and payload construction keeps
   their submitted values.
 - Save/update parsing accepts only HTTPS image URLs with JPEG, PNG, or WebP
-  paths, no credentials, port, query, or fragment. `BLOB_PUBLIC_HOST` pins an
-  exact host when configured; otherwise the Vercel public Blob suffix is
-  required.
+  paths, no credentials, port, query, or fragment. Non-empty image lists
+  require a valid `BLOB_PUBLIC_HOST` and exact hostname match.
 - Post-detail authorization remains owner/accepted-friend only and rechecks
   removed friendships through persistence. Missing posts retain HTTP 404.
 - Delete tests use copy-on-write transaction state. Non-author failure leaves
@@ -211,9 +210,8 @@ Modified:
 
 ### Concerns
 
-- Set `BLOB_PUBLIC_HOST` in deployment to pin image acceptance to the
-  application's exact Blob host. Without it, the approved Vercel public Blob
-  suffix is accepted as required by the review.
+- Set `BLOB_PUBLIC_HOST` in deployment to the application's exact Blob
+  hostname. Image saves fail closed when it is absent or invalid.
 - No live PostgreSQL service was used. Stateful fake transactions cover
   rollback, concurrency, authorization changes, and cascade behavior; build
   validates production Prisma queries and types.
@@ -221,3 +219,71 @@ Modified:
 ### Commit
 
 Commit message: `fix: harden Task 5 save contracts`
+
+## Final Image Provenance Fix - August 8, 2026
+
+### Status
+
+Removed suffix-wide Vercel Blob trust. Any non-empty image list now requires a
+valid `BLOB_PUBLIC_HOST`, and every URL must match that exact hostname. Saves
+without images remain independent of Blob configuration.
+
+### RED
+
+1. `npx tsx --test --test-name-pattern "Blob host configuration|configured exact Blob host|no images without Blob" src/lib/posts.test.ts`
+   - Exit 1: missing `BLOB_PUBLIC_HOST` still accepted a Vercel Blob URL.
+2. First implementation run of the same command
+   - Exit 1: another Vercel tenant still passed because hostname presence was
+     checked instead of equality.
+3. `npx tsx --test --test-name-pattern "configuration is missing or invalid" src/lib/posts.test.ts`
+   - Exit 1: malformed host `%` leaked `TypeError: Invalid URL` instead of the
+     stable configuration error.
+
+### GREEN
+
+- `npx tsx --test --test-name-pattern "Blob host configuration|configured exact Blob host|no images without Blob|HTTPS image path" src/lib/posts.test.ts`
+  - Exit 0: 4 tests, 4 passed.
+- Covered no-image success without config, missing/invalid config rejection,
+  exact configured host acceptance, other-tenant rejection, and existing
+  HTTPS/image-path constraints.
+
+### Verification
+
+- `npm test`
+  - Exit 0: 78 tests, 78 passed.
+- `npx eslint "src/lib/posts.ts" "src/lib/posts.test.ts"`
+  - Exit 0, no warnings or errors.
+- `npm run build`
+  - Exit 0; Prisma generation and Next.js production build completed.
+- `git diff --check`
+  - Exit 0; Windows line-ending notices only.
+
+### Files
+
+- `.env.example`
+- `README.md`
+- `src/lib/posts.ts`
+- `src/lib/posts.test.ts`
+- `.superpowers/sdd/task-5-report.md`
+
+### Self-Review
+
+- `images: []` and omitted images return before reading Blob configuration.
+- Non-empty image lists validate configuration before parsing any image URL.
+- Missing, empty, scheme-bearing, path-bearing, port-bearing, and malformed
+  host values produce `IMAGE_UPLOADS_NOT_CONFIGURED`, HTTP 503, and
+  `Image uploads are not configured`.
+- Image URLs require exact normalized hostname equality plus HTTPS, approved
+  image extension, no credentials, no port, no query, and no fragment.
+- `.env.example` and README document hostname-only configuration with no
+  scheme or path.
+- No route, page, schema, or unrelated module changed.
+
+### Concerns
+
+- Deployments that save images must configure `BLOB_PUBLIC_HOST` before
+  release. Existing image-free saves continue to work without it.
+
+### Commit
+
+Commit message: `fix: require exact Blob host for saved images`

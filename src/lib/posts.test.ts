@@ -32,6 +32,23 @@ import {
 } from "./posts";
 
 const createdAt = new Date("2026-08-08T12:00:00.000Z");
+const trustedBlobHost = "store.public.blob.vercel-storage.com";
+process.env.BLOB_PUBLIC_HOST = trustedBlobHost;
+
+function withBlobPublicHost(
+  value: string | undefined,
+  operation: () => void,
+) {
+  const previous = process.env.BLOB_PUBLIC_HOST;
+  if (value === undefined) delete process.env.BLOB_PUBLIC_HOST;
+  else process.env.BLOB_PUBLIC_HOST = value;
+  try {
+    operation();
+  } finally {
+    if (previous === undefined) delete process.env.BLOB_PUBLIC_HOST;
+    else process.env.BLOB_PUBLIC_HOST = previous;
+  }
+}
 
 function user(id: string): User {
   return {
@@ -793,26 +810,47 @@ test("save payload keeps Task 4 rating and review limits", () => {
   );
 });
 
-test("save payload accepts only trusted uploaded image URLs", () => {
-  const trusted =
-    "https://store.public.blob.vercel-storage.com/places/user-a/cafe.webp";
-  assert.equal(
-    parseSavePlaceInput({
-      ...saveInput,
-      images: [{ url: trusted, caption: null }],
-    }).images[0]?.url,
-    trusted,
-  );
+test("save payload accepts no images without Blob host configuration", () => {
+  withBlobPublicHost(undefined, () => {
+    assert.deepEqual(
+      parseSavePlaceInput({
+        ...saveInput,
+        images: [],
+      }).images,
+      [],
+    );
+  });
+});
 
-  const previousHost = process.env.BLOB_PUBLIC_HOST;
-  process.env.BLOB_PUBLIC_HOST = "images.example.com";
-  try {
+test("save payload rejects images when Blob host configuration is missing or invalid", () => {
+  for (const configuredHost of [
+    undefined,
+    "https://store.public.blob.vercel-storage.com",
+    "%",
+  ]) {
+    withBlobPublicHost(configuredHost, () => {
+      assert.throws(
+        () => parseSavePlaceInput(saveInput),
+        (error: unknown) =>
+          error instanceof PostError &&
+          error.code === "IMAGE_UPLOADS_NOT_CONFIGURED" &&
+          error.status === 503 &&
+          error.message === "Image uploads are not configured",
+      );
+    });
+  }
+});
+
+test("save payload accepts only the configured exact Blob host", () => {
+  withBlobPublicHost(trustedBlobHost, () => {
+    const trusted =
+      `https://${trustedBlobHost}/places/user-a/cafe.webp`;
     assert.equal(
       parseSavePlaceInput({
         ...saveInput,
-        images: [{ url: "https://images.example.com/cafe.jpg" }],
+        images: [{ url: trusted, caption: null }],
       }).images[0]?.url,
-      "https://images.example.com/cafe.jpg",
+      trusted,
     );
     assert.throws(
       () =>
@@ -826,18 +864,17 @@ test("save payload accepts only trusted uploaded image URLs", () => {
         }),
       PostError,
     );
-  } finally {
-    if (previousHost === undefined) delete process.env.BLOB_PUBLIC_HOST;
-    else process.env.BLOB_PUBLIC_HOST = previousHost;
-  }
+  });
+});
 
+test("save payload keeps HTTPS image path constraints", () => {
   for (const url of [
-    "http://store.public.blob.vercel-storage.com/cafe.webp",
+    `http://${trustedBlobHost}/cafe.webp`,
     "https://tracker.example/cafe.webp",
-    "https://store.public.blob.vercel-storage.com.evil.test/cafe.webp",
-    "https://store.public.blob.vercel-storage.com/cafe.svg",
-    "https://store.public.blob.vercel-storage.com/cafe.webp?user=tracked",
-    "https://store.public.blob.vercel-storage.com/cafe.webp#tracked",
+    `https://${trustedBlobHost}.evil.test/cafe.webp`,
+    `https://${trustedBlobHost}/cafe.svg`,
+    `https://${trustedBlobHost}/cafe.webp?user=tracked`,
+    `https://${trustedBlobHost}/cafe.webp#tracked`,
   ]) {
     assert.throws(
       () =>
