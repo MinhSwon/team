@@ -91,3 +91,56 @@ fail 0
 - Full repository lint remains red with the documented baseline of 25 errors and 11 warnings in legacy product files outside Task 1 ownership. New validation files lint clean.
 - `.env.example` matches `.gitignore` pattern `.env*`, so it must be force-added to Git.
 - npm printed install-script policy warnings for existing Prisma tooling and `esbuild`; required tests and Prisma generation still completed successfully.
+
+## Reviewer Fix: Vietnamese D With Stroke
+
+### Fix
+
+- Added a regression test proving `normalizePlaceText("Đà Nẵng")` equals `normalizePlaceText("Da Nang")`.
+- Added `.replace(/đ/g, "d")` after lowercasing in `normalizePlaceText`.
+- Task 1 validation suite now contains six tests.
+
+### RED
+
+Command:
+
+```powershell
+npm test
+```
+
+Exact result: exit code 1; 6 tests, 5 passed, 1 failed.
+
+```text
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
++ actual - expected
+
++ 'đa nang'
+- 'da nang'
+```
+
+### GREEN
+
+Command:
+
+```powershell
+npm test
+```
+
+Exact result: exit code 0; 6 tests, 6 passed, 0 failed, 0 skipped.
+
+```text
+tests 6
+pass 6
+fail 0
+cancelled 0
+skipped 0
+todo 0
+```
+
+Focused lint command:
+
+```powershell
+npx eslint src/lib/validation.ts src/lib/validation.test.ts
+```
+
+Exact result: exit code 0 with no output, errors, or warnings.

@@ -9,6 +9,7 @@ export function normalizePlaceText(value: string): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
+    .replace(/đ/g, "d")
     .trim()
     .replace(/\s+/g, " ");
 }

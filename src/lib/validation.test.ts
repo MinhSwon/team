@@ -16,6 +16,10 @@ test("normalizePlaceText removes Vietnamese accents and collapses whitespace", (
   assert.equal(normalizePlaceText("  Cà   phê SỮA  "), "ca phe sua");
 });
 
+test("normalizePlaceText maps Vietnamese d with stroke to d", () => {
+  assert.equal(normalizePlaceText("Đà Nẵng"), normalizePlaceText("Da Nang"));
+});
+
 test("assertRating accepts boundary ratings", () => {
   assert.equal(assertRating(1), 1);
   assert.equal(assertRating(5), 5);
