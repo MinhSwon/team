@@ -13,8 +13,10 @@ import type {
 
 import {
   PostError,
+  deleteSavedPlace,
   getFeed,
   getPlaceDetail,
+  getPostDetail,
   parseSavePlaceInput,
   saveAndSharePlace,
   updateSavedPlace,
@@ -296,6 +298,54 @@ class FakePostsPersistence implements PostsPersistence {
       .map((post) => this.feedPost(post, query.userId));
   }
 
+  async findPostDetail(
+    userId: string,
+    postId: string,
+  ): Promise<FeedPost | null> {
+    const post = this.state.posts.find(
+      (item) => item.id === postId && !item.deletedAt,
+    );
+    if (!post) return null;
+
+    const visibleAuthors = new Set([userId]);
+    for (const friendship of this.friendships) {
+      if (friendship.status !== "ACCEPTED") continue;
+      if (friendship.requesterId === userId) {
+        visibleAuthors.add(friendship.addresseeId);
+      }
+      if (friendship.addresseeId === userId) {
+        visibleAuthors.add(friendship.requesterId);
+      }
+    }
+
+    return visibleAuthors.has(post.authorId)
+      ? this.feedPost(post, userId)
+      : null;
+  }
+
+  async assertCanViewPost(userId: string, postId: string): Promise<void> {
+    const post = this.state.posts.find(
+      (item) => item.id === postId && !item.deletedAt,
+    );
+    if (!post) throw new PostError("Post not found", "NOT_FOUND", 404);
+    if (post.authorId === userId) return;
+    const friendship = this.friendships.find(
+      (item) =>
+        item.status === "ACCEPTED" &&
+        ((item.requesterId === userId &&
+          item.addresseeId === post.authorId) ||
+          (item.addresseeId === userId &&
+            item.requesterId === post.authorId)),
+    );
+    if (!friendship) {
+      throw new PostError(
+        "You cannot view this post",
+        "FORBIDDEN",
+        403,
+      );
+    }
+  }
+
   async findPlaceDetail(
     userId: string,
     placeId: string,
@@ -438,7 +488,12 @@ const saveInput = {
   rating: 5,
   review: "Excellent coffee.",
   tags: ["coffee", "quiet"],
-  images: [{ url: "https://blob.example/cafe.webp", caption: null }],
+  images: [
+    {
+      url: "https://store.public.blob.vercel-storage.com/cafe.webp",
+      caption: null,
+    },
+  ],
 };
 
 test("one new save creates exactly one post in one transaction", async () => {
@@ -637,6 +692,86 @@ test("place detail includes only current user and accepted-friend reviews", asyn
   );
 });
 
+test("post detail allows owner and accepted friends, then excludes removed friends", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.seedPost("user-a", "owner-post", createdAt);
+  persistence.seedPost("user-b", "friend-post", createdAt);
+  persistence.seedPost("user-c", "pending-post", createdAt);
+  persistence.seedPost("user-d", "stranger-post", createdAt);
+  persistence.addFriendship("user-a", "user-b", "ACCEPTED");
+  persistence.addFriendship("user-a", "user-c", "PENDING");
+
+  assert.equal(
+    (await getPostDetail("user-a", "owner-post", persistence)).id,
+    "owner-post",
+  );
+  assert.equal(
+    (await getPostDetail("user-a", "friend-post", persistence)).id,
+    "friend-post",
+  );
+  for (const postId of ["pending-post", "stranger-post"]) {
+    await assert.rejects(
+      getPostDetail("user-a", postId, persistence),
+      (error: unknown) =>
+        error instanceof PostError && error.code === "FORBIDDEN",
+      postId,
+    );
+  }
+  await assert.rejects(
+    getPostDetail("user-a", "missing-post", persistence),
+    (error: unknown) =>
+      error instanceof PostError && error.code === "NOT_FOUND",
+  );
+
+  persistence.removeFriendship("user-a", "user-b");
+
+  await assert.rejects(
+    getPostDetail("user-a", "friend-post", persistence),
+    (error: unknown) =>
+      error instanceof PostError && error.code === "FORBIDDEN",
+  );
+});
+
+test("delete saved place rejects non-author without changing state", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.seedPost("user-a", "post-1", createdAt, "place-1");
+  persistence.state.images.push({
+    id: "image-1",
+    savedPlaceId: "saved-post-1",
+    url: "https://store.public.blob.vercel-storage.com/cafe.webp",
+    caption: null,
+    sortOrder: 0,
+  });
+  const before = structuredClone(persistence.state);
+
+  await assert.rejects(
+    deleteSavedPlace("user-b", "saved-post-1", persistence),
+    (error: unknown) =>
+      error instanceof PostError && error.code === "FORBIDDEN",
+  );
+  assert.deepEqual(persistence.state, before);
+});
+
+test("delete saved place by author cascades post and images", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.seedPost("user-a", "post-1", createdAt, "place-1");
+  persistence.state.images.push({
+    id: "image-1",
+    savedPlaceId: "saved-post-1",
+    url: "https://store.public.blob.vercel-storage.com/cafe.webp",
+    caption: null,
+    sortOrder: 0,
+  });
+
+  await deleteSavedPlace("user-a", "saved-post-1", persistence);
+
+  assert.deepEqual(persistence.state, {
+    savedPlaces: [],
+    posts: [],
+    images: [],
+  });
+});
+
 test("save payload keeps Task 4 rating and review limits", () => {
   assert.doesNotThrow(() =>
     parseSavePlaceInput({
@@ -656,6 +791,64 @@ test("save payload keeps Task 4 rating and review limits", () => {
     () => parseSavePlaceInput({ ...saveInput, rating: 6 }),
     PostError,
   );
+});
+
+test("save payload accepts only trusted uploaded image URLs", () => {
+  const trusted =
+    "https://store.public.blob.vercel-storage.com/places/user-a/cafe.webp";
+  assert.equal(
+    parseSavePlaceInput({
+      ...saveInput,
+      images: [{ url: trusted, caption: null }],
+    }).images[0]?.url,
+    trusted,
+  );
+
+  const previousHost = process.env.BLOB_PUBLIC_HOST;
+  process.env.BLOB_PUBLIC_HOST = "images.example.com";
+  try {
+    assert.equal(
+      parseSavePlaceInput({
+        ...saveInput,
+        images: [{ url: "https://images.example.com/cafe.jpg" }],
+      }).images[0]?.url,
+      "https://images.example.com/cafe.jpg",
+    );
+    assert.throws(
+      () =>
+        parseSavePlaceInput({
+          ...saveInput,
+          images: [
+            {
+              url: "https://other.public.blob.vercel-storage.com/cafe.jpg",
+            },
+          ],
+        }),
+      PostError,
+    );
+  } finally {
+    if (previousHost === undefined) delete process.env.BLOB_PUBLIC_HOST;
+    else process.env.BLOB_PUBLIC_HOST = previousHost;
+  }
+
+  for (const url of [
+    "http://store.public.blob.vercel-storage.com/cafe.webp",
+    "https://tracker.example/cafe.webp",
+    "https://store.public.blob.vercel-storage.com.evil.test/cafe.webp",
+    "https://store.public.blob.vercel-storage.com/cafe.svg",
+    "https://store.public.blob.vercel-storage.com/cafe.webp?user=tracked",
+    "https://store.public.blob.vercel-storage.com/cafe.webp#tracked",
+  ]) {
+    assert.throws(
+      () =>
+        parseSavePlaceInput({
+          ...saveInput,
+          images: [{ url }],
+        }),
+      PostError,
+      url,
+    );
+  }
 });
 
 test("Task 5 pages stay protected and Add submits to saved API", () => {

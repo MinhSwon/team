@@ -16,6 +16,10 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 
+import {
+  placeInputForSave,
+  type ConfirmedPlace,
+} from "@/lib/place-save-payload";
 import type { PlaceCandidate, PlaceInput } from "@/lib/places";
 import {
   PLACE_LIMITS,
@@ -24,7 +28,6 @@ import {
 
 type Method = "search" | "mapsUrl" | "manual";
 type Busy = "search" | "resolve" | "upload" | "save" | null;
-type ConfirmedPlace = { id?: string; name: string; address: string };
 type UploadedImage = { name: string; url: string };
 type AddPlaceModalProps = {
   isOpen?: boolean;
@@ -352,6 +355,75 @@ function ResolveButton({
   );
 }
 
+export function ConfirmationPlaceFields({
+  place,
+  onChange,
+}: {
+  place: ConfirmedPlace;
+  onChange: (place: ConfirmedPlace) => void;
+}) {
+  const canonical = Boolean(place.id);
+
+  return (
+    <>
+      {canonical && (
+        <p
+          className="text-sm text-emerald-300"
+          id="canonical-place-state"
+        >
+          Canonical place details are locked.
+        </p>
+      )}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label
+            className="mb-1.5 block text-sm font-semibold text-slate-300"
+            htmlFor="confirmed-name"
+          >
+            Name
+          </label>
+          <input
+            aria-describedby={
+              canonical ? "canonical-place-state" : undefined
+            }
+            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none read-only:cursor-not-allowed read-only:text-slate-400 focus:border-amber-400"
+            id="confirmed-name"
+            maxLength={PLACE_LIMITS.name}
+            onChange={(event) =>
+              onChange({ ...place, name: event.target.value })
+            }
+            readOnly={canonical}
+            required
+            value={place.name}
+          />
+        </div>
+        <div>
+          <label
+            className="mb-1.5 block text-sm font-semibold text-slate-300"
+            htmlFor="confirmed-address"
+          >
+            Address
+          </label>
+          <input
+            aria-describedby={
+              canonical ? "canonical-place-state" : undefined
+            }
+            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none read-only:cursor-not-allowed read-only:text-slate-400 focus:border-amber-400"
+            id="confirmed-address"
+            maxLength={PLACE_LIMITS.address}
+            onChange={(event) =>
+              onChange({ ...place, address: event.target.value })
+            }
+            readOnly={canonical}
+            required
+            value={place.address}
+          />
+        </div>
+      </div>
+    </>
+  );
+}
+
 function ConfirmationForm({
   initialPlace,
   onReset,
@@ -411,25 +483,6 @@ function ConfirmationForm({
     setSaveError("");
 
     try {
-      const placeInput: PlaceInput = place.id
-        ? {
-            type: "search",
-            candidate: {
-              source: "local",
-              id: place.id,
-              name: place.name,
-              address: place.address,
-              area: null,
-              latitude: null,
-              longitude: null,
-              website: null,
-            },
-          }
-        : {
-            type: "manual",
-            name: place.name,
-            address: place.address,
-          };
       const result = await api<{
         savedPlace: { placeId: string };
         post: { id: string };
@@ -437,7 +490,7 @@ function ConfirmationForm({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          place: placeInput,
+          place: placeInputForSave(place),
           rating,
           review,
           tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
@@ -471,50 +524,7 @@ function ConfirmationForm({
         </button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div>
-          <label
-            className="mb-1.5 block text-sm font-semibold text-slate-300"
-            htmlFor="confirmed-name"
-          >
-            Name
-          </label>
-          <input
-            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none focus:border-amber-400"
-            id="confirmed-name"
-            maxLength={PLACE_LIMITS.name}
-            onChange={(event) =>
-              setPlace((current) => ({
-                ...current,
-                name: event.target.value,
-              }))
-            }
-            required
-            value={place.name}
-          />
-        </div>
-        <div>
-          <label
-            className="mb-1.5 block text-sm font-semibold text-slate-300"
-            htmlFor="confirmed-address"
-          >
-            Address
-          </label>
-          <input
-            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none focus:border-amber-400"
-            id="confirmed-address"
-            maxLength={PLACE_LIMITS.address}
-            onChange={(event) =>
-              setPlace((current) => ({
-                ...current,
-                address: event.target.value,
-              }))
-            }
-            required
-            value={place.address}
-          />
-        </div>
-      </div>
+      <ConfirmationPlaceFields place={place} onChange={setPlace} />
 
       <fieldset>
         <legend className="mb-2 text-sm font-semibold text-slate-300">

@@ -128,6 +128,11 @@ export interface PostsPersistence {
   ): Promise<{ savedPlace: UserSavedPlace; post: Post } | null>;
   findSavedPlaceById(id: string): Promise<UserSavedPlace | null>;
   findFeedPosts(query: FeedQuery): Promise<FeedPost[]>;
+  assertCanViewPost(userId: string, postId: string): Promise<void>;
+  findPostDetail(
+    userId: string,
+    postId: string,
+  ): Promise<FeedPost | null>;
   findPlaceDetail(
     userId: string,
     placeId: string,
@@ -214,7 +219,24 @@ function image(value: unknown): SavedImageInput {
   } catch {
     throw new PostError("Invalid saved image URL", "INVALID_INPUT", 400);
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
+  const configuredHost = process.env.BLOB_PUBLIC_HOST
+    ?.trim()
+    .toLowerCase()
+    .replace(/\.$/, "");
+  const trustedHost = configuredHost
+    ? url.hostname === configuredHost
+    : url.hostname.endsWith(".public.blob.vercel-storage.com");
+  const imagePath = /\.(?:jpe?g|png|webp)$/i.test(url.pathname);
+  if (
+    url.protocol !== "https:" ||
+    !trustedHost ||
+    !imagePath ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.search ||
+    url.hash
+  ) {
     throw new PostError("Invalid saved image URL", "INVALID_INPUT", 400);
   }
 
@@ -461,6 +483,20 @@ const defaultPersistence: PostsPersistence = {
     });
     return posts.map(feedPost);
   },
+  assertCanViewPost: async (userId, postId) => {
+    await assertCanViewPost(userId, postId);
+  },
+  findPostDetail: async (userId, postId) => {
+    const post = await prisma.post.findFirst({
+      where: {
+        id: postId,
+        deletedAt: null,
+        OR: visiblePostAuthors(userId),
+      },
+      include: postInclude(userId),
+    });
+    return post ? feedPost(post) : null;
+  },
   findPlaceDetail: async (userId, placeId) => {
     const place = await prisma.place.findUnique({
       where: { id: placeId },
@@ -671,20 +707,14 @@ export async function getFeed(
 export async function getPostDetail(
   userId: string,
   postId: string,
+  persistence: PostsPersistence = defaultPersistence,
 ): Promise<FeedPost> {
-  await assertCanViewPost(userId, postId);
-  const post = await prisma.post.findFirst({
-    where: {
-      id: postId,
-      deletedAt: null,
-      OR: visiblePostAuthors(userId),
-    },
-    include: postInclude(userId),
-  });
+  await persistence.assertCanViewPost(userId, postId);
+  const post = await persistence.findPostDetail(userId, postId);
   if (!post) {
     throw new PostError("You cannot view this post", "FORBIDDEN", 403);
   }
-  return feedPost(post);
+  return post;
 }
 
 export async function getSavedPlaces(

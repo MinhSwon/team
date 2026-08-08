@@ -117,3 +117,107 @@ Already compliant, unchanged:
 ## Commit
 
 Commit message: `feat: share saved places in friend feed`
+
+## Review Fixes - August 8, 2026
+
+### Status
+
+Fixed all five Task 5 review findings. `/api/saved` now returns recoverable
+manual confirmation as HTTP 422, canonical confirmation fields cannot imply
+editable values that will be discarded, saved image URLs are restricted to
+trusted upload hosts and image paths, and stateful tests cover post-detail
+authorization plus author-only cascade deletion.
+
+### RED
+
+1. `npx tsx --test src/app/api/saved/route.test.ts`
+   - Exit 1: `handleSavedPost` was missing.
+   - Proved the route could not be tested at its HTTP boundary.
+2. `npx tsx --test src/components/AddPlaceModal.test.ts`
+   - Exit 1: `ConfirmationPlaceFields` was missing.
+   - Proved canonical/manual confirmation structure was not exposed or
+     enforced.
+3. Focused trusted-image test
+   - Exit 1: HTTP Vercel Blob URL did not throw.
+   - A second RED proved a configured exact host still allowed another Vercel
+     Blob tenant.
+4. Focused post-detail/delete tests
+   - Post detail exited 1 after reaching live Prisma despite the stateful fake,
+     proving persistence was hard-wired.
+   - Both delete characterization tests passed immediately against stateful
+     rollback/cascade semantics.
+5. Missing-post authorization preservation
+   - Exit 1: injected post detail returned `FORBIDDEN` instead of the existing
+     `NOT_FOUND` contract.
+
+### GREEN
+
+- Saved route focused test: 1 passed.
+- Confirmation UI/payload focused test: 1 passed.
+- Trusted image URL focused test: 1 passed.
+- Post-detail authorization and delete contract focused tests: 3 passed.
+- Missing-post preservation focused test: 1 passed.
+
+### Verification
+
+- `npm test`
+  - Exit 0: 75 tests, 75 passed.
+- `npx eslint "src/app/api/saved/route.ts" "src/app/api/saved/route.test.ts" "src/components/AddPlaceModal.tsx" "src/components/AddPlaceModal.test.ts" "src/lib/place-save-payload.ts" "src/lib/posts.ts" "src/lib/posts.test.ts"`
+  - Exit 0, no warnings or errors.
+- `npm run build`
+  - Exit 0; Prisma generation and Next.js production build completed.
+- `npx react-doctor@latest --verbose --scope changed`
+  - Exit 0, score 85/100.
+  - Two pre-existing performance warnings remain in the upload signature
+    comparison and tag normalization.
+- `git diff --check`
+  - Exit 0; Windows line-ending notices only.
+
+### Files
+
+Created:
+
+- `src/app/api/saved/route.test.ts`
+- `src/components/AddPlaceModal.test.ts`
+- `src/lib/place-save-payload.ts`
+
+Modified:
+
+- `src/app/api/saved/route.ts`
+- `src/components/AddPlaceModal.tsx`
+- `src/lib/posts.ts`
+- `src/lib/posts.test.ts`
+- `.superpowers/sdd/task-5-report.md`
+
+### Self-Review
+
+- Route dependency injection changes testability only; production `POST`
+  still gets identity exclusively from `requireCurrentUser`.
+- Manual confirmation errors now use stable code
+  `MANUAL_CONFIRMATION_REQUIRED`, HTTP 422, `requiresConfirmation`, and
+  fallback name/address fields. Other typed errors cannot produce HTTP 2xx.
+- Canonical name/address fields are read-only and linked to visible canonical
+  state text. Manual fields remain editable, and payload construction keeps
+  their submitted values.
+- Save/update parsing accepts only HTTPS image URLs with JPEG, PNG, or WebP
+  paths, no credentials, port, query, or fragment. `BLOB_PUBLIC_HOST` pins an
+  exact host when configured; otherwise the Vercel public Blob suffix is
+  required.
+- Post-detail authorization remains owner/accepted-friend only and rechecks
+  removed friendships through persistence. Missing posts retain HTTP 404.
+- Delete tests use copy-on-write transaction state. Non-author failure leaves
+  all state unchanged; author deletion removes saved place, post, and images.
+- No protected route paths or unrelated application modules changed.
+
+### Concerns
+
+- Set `BLOB_PUBLIC_HOST` in deployment to pin image acceptance to the
+  application's exact Blob host. Without it, the approved Vercel public Blob
+  suffix is accepted as required by the review.
+- No live PostgreSQL service was used. Stateful fake transactions cover
+  rollback, concurrency, authorization changes, and cascade behavior; build
+  validates production Prisma queries and types.
+
+### Commit
+
+Commit message: `fix: harden Task 5 save contracts`
