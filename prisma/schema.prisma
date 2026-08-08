@@ -6,383 +6,206 @@ datasource db {
   provider = "postgresql"
 }
 
-enum GroupRole {
-  OWNER
-  ADMIN
-  MEMBER
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
 }
 
-enum PlaceStatus {
-  WANT_TO_GO
-  PLANNED
-  VISITED
-  FAVORITE
-  ARCHIVED
-}
-
-enum VisitFeedback {
-  LOVED_IT
-  OKAY
-  DIDNT_LIKE
-}
-
-enum ImportBatchStatus {
-  UPLOADED
-  PROCESSING
-  REVIEW_REQUIRED
-  COMPLETED
-  FAILED
-}
-
-enum CandidateStatus {
-  READY
-  NEEDS_REVIEW
-  DUPLICATE
-  INVALID
-  IMPORTED
-  SKIPPED
-}
-
-enum ImportDestination {
-  PERSONAL
-  GROUP
+enum NotificationType {
+  FRIEND_REQUEST
+  FRIEND_ACCEPTED
+  POST_LIKED
+  POST_COMMENTED
 }
 
 model User {
-  id            String             @id @default(uuid())
-  email         String             @unique
+  id            String           @id
   name          String
-  password      String
-  avatar        String?
+  email         String           @unique
+  emailVerified Boolean          @default(false)
+  image         String?
+  username      String           @unique
   bio           String?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-
-  preferences   UserPreference?
-  memberships   GroupMembership[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+  requestsSent  Friendship[]     @relation("FriendRequester")
+  requestsIn    Friendship[]     @relation("FriendAddressee")
   savedPlaces   UserSavedPlace[]
-  groupSaved    GroupSavedPlace[]  @relation("AddedByRelation")
-  collections   Collection[]
-  interactions  Interaction[]
-  visits        Visit[]
-  importBatches ImportBatch[]
-  recSessions   RecommendationSession[]
-  activityEvents ActivityEvent[]
-
-  @@map("users")
+  posts         Post[]
+  likes         PostLike[]
+  comments      Comment[]
+  notifications Notification[]   @relation("NotificationRecipient")
+  actions       Notification[]   @relation("NotificationActor")
 }
 
-model UserPreference {
-  id                  String   @id @default(uuid())
-  userId              String   @unique
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  preferredCategories Json?
-  priceRange          Json?
-  favoriteAreas       Json?
-  activities          Json?
-  implicitScores      Json?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-
-  @@map("user_preferences")
-}
-
-model Group {
-  id            String             @id @default(uuid())
-  name          String
-  description   String?
-  avatar        String?
-  code          String             @unique @default(uuid())
-  createdBy     String
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-
-  memberships   GroupMembership[]
-  savedPlaces   GroupSavedPlace[]
-  collections   Collection[]
-  interactions  Interaction[]
-  visits        Visit[]
-  importBatches ImportBatch[]
-  recSessions   RecommendationSession[]
-  activityEvents ActivityEvent[]
-
-  @@map("groups")
-}
-
-model GroupMembership {
-  id        String    @id @default(uuid())
-  groupId   String
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
   userId    String
-  role      GroupRole @default(MEMBER)
-  joinedAt  DateTime  @default(now())
-
-  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([groupId, userId])
-  @@map("group_memberships")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-model PlaceCategory {
-  id          String          @id @default(uuid())
-  name        String
-  slug        String          @unique
-  icon        String?
-  parentId    String?
-  parent      PlaceCategory?  @relation("SubCategories", fields: [parentId], references: [id])
-  children    PlaceCategory[] @relation("SubCategories")
-  places      Place[]         @relation("CategoryRelation")
-  subPlaces   Place[]         @relation("SubCategoryRelation")
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  @@map("place_categories")
+  @@unique([providerId, accountId])
 }
 
-model PlaceTag {
-  id        String            @id @default(uuid())
-  name      String
-  slug      String            @unique
-  mappings  PlaceTagMapping[]
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
 
-  @@map("place_tags")
+model Friendship {
+  id          String           @id @default(uuid())
+  requesterId String
+  addresseeId String
+  pairKey     String           @unique
+  status      FriendshipStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  requester   User             @relation("FriendRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee   User             @relation("FriendAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@index([requesterId, status])
+  @@index([addresseeId, status])
 }
 
 model Place {
-  id              String             @id @default(uuid())
-  name            String
-  description     String?
-  address         String
-  area            String?
-  latitude        Float
-  longitude       Float
-  priceRange      String?
-  phone           String?
-  website         String?
-  rating          Float              @default(4.5)
-  categoryId      String?
-  category        PlaceCategory?     @relation("CategoryRelation", fields: [categoryId], references: [id])
-  subcategoryId   String?
-  subcategory     PlaceCategory?     @relation("SubCategoryRelation", fields: [subcategoryId], references: [id])
-  externalSource  String?
-  externalPlaceId String?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  id                String           @id @default(uuid())
+  name              String
+  normalizedName    String
+  address           String
+  normalizedAddress String
+  area              String?
+  latitude          Float?
+  longitude         Float?
+  externalSource    String?
+  externalPlaceId   String?
+  website           String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  savedBy           UserSavedPlace[]
 
-  tags            PlaceTagMapping[]
-  images          PlaceImage[]
-  openingHours    OpeningHours[]
-  userSaved       UserSavedPlace[]
-  groupSaved      GroupSavedPlace[]
-  collectionPlaces CollectionPlace[]
-  interactions    Interaction[]
-  visits          Visit[]
-  candidates      ImportCandidate[]  @relation("MatchedPlaceRelation")
-  activityEvents  ActivityEvent[]
-
-  @@map("places")
-}
-
-model PlaceTagMapping {
-  placeId String
-  tagId   String
-  place   Place    @relation(fields: [placeId], references: [id], onDelete: Cascade)
-  tag     PlaceTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
-
-  @@id([placeId, tagId])
-  @@map("place_tag_mappings")
-}
-
-model PlaceImage {
-  id        String   @id @default(uuid())
-  placeId   String
-  url       String
-  caption   String?
-  place     Place    @relation(fields: [placeId], references: [id], onDelete: Cascade)
-
-  @@map("place_images")
-}
-
-model OpeningHours {
-  id        String   @id @default(uuid())
-  placeId   String
-  dayOfWeek Int
-  openTime  String
-  closeTime String
-  isClosed  Boolean  @default(false)
-  place     Place    @relation(fields: [placeId], references: [id], onDelete: Cascade)
-
-  @@map("opening_hours")
+  @@unique([externalSource, externalPlaceId])
+  @@index([normalizedName, normalizedAddress])
 }
 
 model UserSavedPlace {
-  id        String      @id @default(uuid())
-  userId    String
-  placeId   String
-  status    PlaceStatus @default(WANT_TO_GO)
-  note      String?
-  savedAt   DateTime    @default(now())
-
-  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  place     Place       @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  id           String            @id @default(uuid())
+  userId       String
+  placeId      String
+  rating       Int?
+  review       String?
+  tags         String[]
+  sourcePostId String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place        Place             @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  sourcePost   Post?             @relation("PostReshares", fields: [sourcePostId], references: [id], onDelete: SetNull)
+  post         Post?
+  images       SavedPlaceImage[]
 
   @@unique([userId, placeId])
-  @@map("user_saved_places")
+  @@index([userId, createdAt])
 }
 
-model GroupSavedPlace {
-  id        String      @id @default(uuid())
-  groupId   String
-  placeId   String
-  addedById String
-  status    PlaceStatus @default(WANT_TO_GO)
-  groupNote String?
-  savedAt   DateTime    @default(now())
+model SavedPlaceImage {
+  id           String         @id @default(uuid())
+  savedPlaceId String
+  url          String
+  caption      String?
+  sortOrder    Int            @default(0)
+  savedPlace   UserSavedPlace @relation(fields: [savedPlaceId], references: [id], onDelete: Cascade)
 
-  group     Group       @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  place     Place       @relation(fields: [placeId], references: [id], onDelete: Cascade)
-  addedBy   User        @relation("AddedByRelation", fields: [addedById], references: [id], onDelete: Cascade)
-
-  @@unique([groupId, placeId])
-  @@map("group_saved_places")
+  @@index([savedPlaceId, sortOrder])
 }
 
-model Collection {
-  id          String            @id @default(uuid())
-  name        String
-  description String?
-  isPublic    Boolean           @default(false)
-  userId      String?
-  groupId     String?
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+model Post {
+  id            String           @id @default(uuid())
+  authorId      String
+  savedPlaceId  String           @unique
+  sourcePostId  String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  deletedAt     DateTime?
+  author        User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  savedPlace    UserSavedPlace   @relation(fields: [savedPlaceId], references: [id], onDelete: Cascade)
+  sourcePost    Post?            @relation("PostSources", fields: [sourcePostId], references: [id], onDelete: SetNull)
+  reshares      Post[]           @relation("PostSources")
+  sourcedSaves  UserSavedPlace[] @relation("PostReshares")
+  likes         PostLike[]
+  comments      Comment[]
+  notifications Notification[]
 
-  user        User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  group       Group?            @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  places      CollectionPlace[]
-
-  @@map("collections")
+  @@index([authorId, createdAt, id])
 }
 
-model CollectionPlace {
-  id           String     @id @default(uuid())
-  collectionId String
-  placeId      String
-  addedAt      DateTime   @default(now())
-
-  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  place        Place      @relation(fields: [placeId], references: [id], onDelete: Cascade)
-
-  @@unique([collectionId, placeId])
-  @@map("collection_places")
-}
-
-model Interaction {
-  id        String   @id @default(uuid())
+model PostLike {
+  postId    String
   userId    String
-  groupId   String?
-  placeId   String
-  type      String
-  content   String?
   createdAt DateTime @default(now())
-
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  group     Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  place     Place    @relation(fields: [placeId], references: [id], onDelete: Cascade)
 
-  @@map("interactions")
+  @@id([postId, userId])
 }
 
-model Visit {
-  id        String        @id @default(uuid())
-  userId    String
-  groupId   String?
-  placeId   String
-  visitedAt DateTime      @default(now())
-  feedback  VisitFeedback @default(LOVED_IT)
-  note      String?
-  photos    Json?
+model Comment {
+  id            String         @id @default(uuid())
+  postId        String
+  authorId      String
+  body          String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  deletedAt     DateTime?
+  post          Post           @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author        User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  notifications Notification[]
 
-  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  group     Group?        @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  place     Place         @relation(fields: [placeId], references: [id], onDelete: Cascade)
-
-  @@map("visits")
+  @@index([postId, createdAt])
 }
 
-model ImportBatch {
-  id             String            @id @default(uuid())
-  userId         String
-  groupId        String?
-  fileName       String
-  fileType       String
-  totalCount     Int               @default(0)
-  processedCount Int               @default(0)
-  readyCount     Int               @default(0)
-  status         ImportBatchStatus @default(UPLOADED)
-  createdAt      DateTime          @default(now())
+model Notification {
+  id           String           @id @default(uuid())
+  recipientId  String
+  actorId      String
+  type         NotificationType
+  postId       String?
+  commentId    String?
+  friendshipId String?
+  readAt       DateTime?
+  createdAt    DateTime         @default(now())
+  recipient    User             @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  actor        User             @relation("NotificationActor", fields: [actorId], references: [id], onDelete: Cascade)
+  post         Post?            @relation(fields: [postId], references: [id], onDelete: Cascade)
+  comment      Comment?         @relation(fields: [commentId], references: [id], onDelete: Cascade)
 
-  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  group          Group?            @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  candidates     ImportCandidate[]
-
-  @@map("import_batches")
-}
-
-model ImportCandidate {
-  id                  String            @id @default(uuid())
-  batchId             String
-  rawText             String?
-  extractedName       String
-  extractedAddress    String?
-  extractedArea       String?
-  extractedCategory   String?
-  extractedSubcategory String?
-  extractedPrice      String?
-  extractedNotes      String?
-  extractedTags       Json?
-  confidenceScore     Float             @default(0.8)
-  suggestedCategory   String?
-  suggestedTags       Json?
-  matchedPlaceId      String?
-  status              CandidateStatus   @default(READY)
-  importDestination   ImportDestination @default(PERSONAL)
-  createdAt           DateTime          @default(now())
-
-  batch               ImportBatch       @relation(fields: [batchId], references: [id], onDelete: Cascade)
-  matchedPlace        Place?            @relation("MatchedPlaceRelation", fields: [matchedPlaceId], references: [id])
-
-  @@map("import_candidates")
-}
-
-model RecommendationSession {
-  id              String   @id @default(uuid())
-  userId          String
-  groupId         String?
-  whoContext      String
-  activityContext String
-  timeContext     String
-  budgetContext   String
-  distanceContext String
-  results         Json
-  createdAt       DateTime @default(now())
-
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  group           Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
-
-  @@map("recommendation_sessions")
-}
-
-model ActivityEvent {
-  id        String   @id @default(uuid())
-  userId    String
-  groupId   String?
-  placeId   String?
-  eventType String
-  context   Json?
-  createdAt DateTime @default(now())
-
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  group     Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  place     Place?   @relation(fields: [placeId], references: [id], onDelete: Cascade)
-
-  @@map("activity_events")
+  @@index([recipientId, readAt, createdAt])
 }

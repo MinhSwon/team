@@ -7,11 +7,15 @@
     "build": "prisma generate && next build",
     "postinstall": "prisma generate",
     "start": "next start",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "lint": "eslint"
   },
   "dependencies": {
+    "@better-auth/prisma-adapter": "^1.6.26",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
+    "@vercel/blob": "^2.7.0",
+    "better-auth": "^1.6.26",
     "clsx": "^2.1.1",
     "csv-parse": "^7.0.2",
     "leaflet": "^1.9.4",
@@ -37,6 +41,7 @@
     "eslint-config-next": "16.3.0",
     "prisma": "^7.9.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.11",
     "typescript": "^5"
   }
 }
