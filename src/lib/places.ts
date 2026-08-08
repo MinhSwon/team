@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { Place } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
@@ -51,12 +53,11 @@ export interface PlaceStore {
     externalSource: string,
     externalPlaceId: string,
   ): Promise<Place | null>;
-  findByNormalized(
-    normalizedName: string,
-    normalizedAddress: string,
-  ): Promise<Place | null>;
   searchLocal(normalizedQuery: string): Promise<Place[]>;
   create(data: CanonicalPlaceData): Promise<Place>;
+  upsertManual(
+    data: CanonicalPlaceData & { dedupeKey: string },
+  ): Promise<Place>;
 }
 
 export class PlaceResolutionError extends Error {
@@ -198,11 +199,6 @@ const defaultStore: PlaceStore = {
         },
       },
     }),
-  findByNormalized: (normalizedName, normalizedAddress) =>
-    prisma.place.findFirst({
-      where: { normalizedName, normalizedAddress },
-      orderBy: { id: "asc" },
-    }),
   searchLocal: (normalizedQuery) =>
     prisma.place.findMany({
       where: {
@@ -215,6 +211,12 @@ const defaultStore: PlaceStore = {
       take: 20,
     }),
   create: (data) => prisma.place.create({ data }),
+  upsertManual: (data) =>
+    prisma.place.upsert({
+      where: { dedupeKey: data.dedupeKey },
+      update: {},
+      create: data,
+    }),
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -302,6 +304,7 @@ async function searchGoogle(
 function mapsUrl(rawUrl: string): URL {
   let url: URL;
   try {
+    decodeURIComponent(rawUrl);
     url = new URL(rawUrl);
   } catch {
     throw new PlaceResolutionError(
@@ -388,8 +391,22 @@ async function fetchGooglePlace(
   }
 
   const candidate = googleCandidate(await response.json());
-  if (!candidate) throw new Error("Google Place details were incomplete");
+  if (
+    !candidate ||
+    candidate.externalPlaceId !== externalPlaceId
+  ) {
+    throw new Error("Google Place details were incomplete");
+  }
   return candidate;
+}
+
+function manualDedupeKey(
+  normalizedName: string,
+  normalizedAddress: string,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify([normalizedName, normalizedAddress]))
+    .digest("hex");
 }
 
 function canonicalData(
@@ -425,6 +442,13 @@ function canonicalData(
     externalSource: candidate.source === "google" ? "google" : null,
     externalPlaceId:
       candidate.source === "google" ? candidate.externalPlaceId : null,
+    dedupeKey:
+      candidate.source === "google"
+        ? null
+        : manualDedupeKey(
+            normalizePlaceText(name),
+            normalizePlaceText(address),
+          ),
     website: candidate.website?.trim() || null,
   };
 }
@@ -469,7 +493,22 @@ export async function searchPlaces(
 
   const store = dependencies.store ?? defaultStore;
   const localPlaces = await store.searchLocal(normalizedQuery);
-  const local = localPlaces.map(localCandidate);
+  const manualKeys = new Set<string>();
+  const externalKeys = new Set<string>();
+  const dedupedLocal = localPlaces.filter((place) => {
+    if (place.externalSource && place.externalPlaceId) {
+      const key = `${place.externalSource}:${place.externalPlaceId}`;
+      if (externalKeys.has(key)) return false;
+      externalKeys.add(key);
+      return true;
+    }
+
+    const key = `${place.normalizedName}:${place.normalizedAddress}`;
+    if (manualKeys.has(key)) return false;
+    manualKeys.add(key);
+    return true;
+  });
+  const local = dedupedLocal.map(localCandidate);
   const apiKey = dependencies.apiKey ?? process.env.GOOGLE_MAPS_API_KEY;
   if (!apiKey) return local;
 
@@ -484,27 +523,12 @@ export async function searchPlaces(
     return local;
   }
 
-  const keys = new Set(
-    local.map(
-      (candidate) =>
-        `${normalizePlaceText(candidate.name)}:${normalizePlaceText(candidate.address)}`,
-    ),
-  );
-  const externalIds = new Set(
-    localPlaces.flatMap((place) =>
-      place.externalSource === "google" && place.externalPlaceId
-        ? [place.externalPlaceId]
-        : [],
-    ),
-  );
-
   return [
     ...local,
     ...provider.filter((candidate) => {
-      if (externalIds.has(candidate.externalPlaceId)) return false;
-      const key = `${normalizePlaceText(candidate.name)}:${normalizePlaceText(candidate.address)}`;
-      if (keys.has(key)) return false;
-      keys.add(key);
+      const key = `google:${candidate.externalPlaceId}`;
+      if (externalKeys.has(key)) return false;
+      externalKeys.add(key);
       return true;
     }),
   ].slice(0, 20);
@@ -532,45 +556,93 @@ export async function resolvePlace(
       input.candidate.externalPlaceId,
     );
     if (existing) return existing;
-    return createCanonical(canonicalData(input.candidate), store);
+
+    const apiKey = dependencies.apiKey ?? process.env.GOOGLE_MAPS_API_KEY;
+    if (!apiKey) {
+      throw new PlaceResolutionError(
+        "Confirm this place manually",
+        "MANUAL_CONFIRMATION_REQUIRED",
+        200,
+        {
+          name: input.candidate.name.trim(),
+          address: input.candidate.address.trim(),
+        },
+      );
+    }
+
+    let candidate: GooglePlaceCandidate;
+    try {
+      candidate = await fetchGooglePlace(
+        input.candidate.externalPlaceId,
+        apiKey,
+        dependencies.fetch ?? fetch,
+      );
+    } catch {
+      throw new PlaceResolutionError(
+        "Confirm this place manually",
+        "MANUAL_CONFIRMATION_REQUIRED",
+        200,
+        {
+          name: input.candidate.name.trim(),
+          address: input.candidate.address.trim(),
+        },
+      );
+    }
+
+    return createCanonical(canonicalData(candidate), store);
   }
 
   if (input.type === "manual") {
     const data = canonicalData(input);
-    const existing = await store.findByNormalized(
-      data.normalizedName,
-      data.normalizedAddress,
-    );
-    return existing ?? createCanonical(data, store);
+    if (!data.dedupeKey) invalidInput();
+    return store.upsertManual({ ...data, dedupeKey: data.dedupeKey });
   }
 
   const originalUrl = mapsUrl(input.url);
   const fallback = mapsFallback(originalUrl);
   const apiKey = dependencies.apiKey ?? process.env.GOOGLE_MAPS_API_KEY;
+  let expandedUrl: URL;
 
-  if (apiKey) {
-    try {
-      const expandedUrl = await expandShortMapsUrl(
-        originalUrl,
-        dependencies.fetch ?? fetch,
-      );
-      const externalPlaceId = mapsPlaceId(expandedUrl);
-      if (externalPlaceId) {
-        const existing = await store.findByExternal(
-          "google",
-          externalPlaceId,
-        );
-        if (existing) return existing;
+  try {
+    expandedUrl = await expandShortMapsUrl(
+      originalUrl,
+      dependencies.fetch ?? fetch,
+    );
+  } catch (error) {
+    if (error instanceof PlaceResolutionError) throw error;
+    throw new PlaceResolutionError(
+      "Confirm this place manually",
+      "MANUAL_CONFIRMATION_REQUIRED",
+      200,
+      fallback,
+    );
+  }
 
-        const candidate = await fetchGooglePlace(
+  const externalPlaceId = mapsPlaceId(expandedUrl);
+  if (externalPlaceId) {
+    const existing = await store.findByExternal(
+      "google",
+      externalPlaceId,
+    );
+    if (existing) return existing;
+
+    if (apiKey) {
+      let candidate: GooglePlaceCandidate;
+      try {
+        candidate = await fetchGooglePlace(
           externalPlaceId,
           apiKey,
           dependencies.fetch ?? fetch,
         );
-        return createCanonical(canonicalData(candidate), store);
+      } catch {
+        throw new PlaceResolutionError(
+          "Confirm this place manually",
+          "MANUAL_CONFIRMATION_REQUIRED",
+          200,
+          fallback,
+        );
       }
-    } catch {
-      // Provider failure intentionally falls through to manual confirmation.
+      return createCanonical(canonicalData(candidate), store);
     }
   }
 

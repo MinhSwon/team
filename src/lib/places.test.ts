@@ -26,6 +26,7 @@ function place(overrides: Partial<Place> = {}): Place {
     longitude: null,
     externalSource: null,
     externalPlaceId: null,
+    dedupeKey: null,
     website: null,
     createdAt: now,
     updatedAt: now,
@@ -55,16 +56,6 @@ class FakePlaceStore implements PlaceStore {
     );
   }
 
-  async findByNormalized(normalizedName: string, normalizedAddress: string) {
-    return (
-      this.places.find(
-        (item) =>
-          item.normalizedName === normalizedName &&
-          item.normalizedAddress === normalizedAddress,
-      ) ?? null
-    );
-  }
-
   async searchLocal(normalizedQuery: string) {
     return this.places.filter(
       (item) =>
@@ -81,6 +72,13 @@ class FakePlaceStore implements PlaceStore {
     });
     this.places.push(created);
     return created;
+  }
+
+  async upsertManual(data: CanonicalPlaceData) {
+    const existing = this.places.find(
+      (item) => item.dedupeKey === data.dedupeKey,
+    );
+    return existing ?? this.create(data);
   }
 }
 
@@ -108,9 +106,109 @@ test("resolvePlace reuses a place with the same external ID", async () => {
   assert.equal(store.creates, 0);
 });
 
+test("resolvePlace fetches trusted Google details before creating a search result", async () => {
+  const store = new FakePlaceStore();
+  let requestedUrl = "";
+  const fetchFn: typeof fetch = async (input) => {
+    requestedUrl = String(input);
+    return Response.json({
+      id: "ChIJ-trusted",
+      displayName: { text: "Trusted Provider Name" },
+      formattedAddress: "22 Trusted Road",
+      location: { latitude: 10.8, longitude: 106.7 },
+      websiteUri: "https://trusted.example",
+    });
+  };
+
+  const resolved = await resolvePlace(
+    {
+      type: "search",
+      candidate: {
+        source: "google",
+        externalPlaceId: "ChIJ-trusted",
+        name: "Poisoned Client Name",
+        address: "Poisoned Client Address",
+      },
+    },
+    { apiKey: "test-key", fetch: fetchFn, store },
+  );
+
+  assert.equal(
+    requestedUrl,
+    "https://places.googleapis.com/v1/places/ChIJ-trusted",
+  );
+  assert.equal(resolved.name, "Trusted Provider Name");
+  assert.equal(resolved.address, "22 Trusted Road");
+  assert.equal(resolved.externalPlaceId, "ChIJ-trusted");
+  assert.equal(resolved.dedupeKey, null);
+});
+
+test("resolvePlace requires manual confirmation when Google details are unavailable", async () => {
+  const store = new FakePlaceStore();
+
+  await assert.rejects(
+    resolvePlace(
+      {
+        type: "search",
+        candidate: {
+          source: "google",
+          externalPlaceId: "ChIJ-unverified",
+          name: "Client Suggested Name",
+          address: "Client Suggested Address",
+        },
+      },
+      { apiKey: "", store },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof PlaceResolutionError);
+      assert.equal(error.code, "MANUAL_CONFIRMATION_REQUIRED");
+      assert.deepEqual(error.fallback, {
+        name: "Client Suggested Name",
+        address: "Client Suggested Address",
+      });
+      return true;
+    },
+  );
+
+  assert.equal(store.creates, 0);
+});
+
+test("resolvePlace does not create a Google record when Place Details fails", async () => {
+  const store = new FakePlaceStore();
+  const fetchFn: typeof fetch = async () =>
+    new Response("provider unavailable", { status: 503 });
+
+  await assert.rejects(
+    resolvePlace(
+      {
+        type: "search",
+        candidate: {
+          source: "google",
+          externalPlaceId: "ChIJ-unavailable",
+          name: "Client Suggested Name",
+          address: "Client Suggested Address",
+        },
+      },
+      { apiKey: "test-key", fetch: fetchFn, store },
+    ),
+    (error: unknown) =>
+      error instanceof PlaceResolutionError &&
+      error.code === "MANUAL_CONFIRMATION_REQUIRED",
+  );
+
+  assert.equal(store.creates, 0);
+});
+
 test("resolvePlace reuses a normalized manual duplicate", async () => {
-  const existing = place();
-  const store = new FakePlaceStore([existing]);
+  const store = new FakePlaceStore();
+  const existing = await resolvePlace(
+    {
+      type: "manual",
+      name: "Cafe Central",
+      address: "1 Main Street",
+    },
+    { store },
+  );
 
   const resolved = await resolvePlace(
     {
@@ -122,7 +220,26 @@ test("resolvePlace reuses a normalized manual duplicate", async () => {
   );
 
   assert.equal(resolved.id, existing.id);
-  assert.equal(store.creates, 0);
+  assert.equal(store.creates, 1);
+});
+
+test("resolvePlace atomically reuses concurrent manual duplicates", async () => {
+  const store = new FakePlaceStore();
+  const input = {
+    type: "manual" as const,
+    name: "Cafe Central",
+    address: "1 Main Street",
+  };
+
+  const [first, second] = await Promise.all([
+    resolvePlace(input, { store }),
+    resolvePlace(input, { store }),
+  ]);
+
+  assert.equal(first.id, second.id);
+  assert.equal(store.places.length, 1);
+  assert.equal(store.creates, 1);
+  assert.match(store.places[0]?.dedupeKey ?? "", /^[a-f0-9]{64}$/);
 });
 
 test("resolvePlace returns manual confirmation fields for an unresolved Maps URL", async () => {
@@ -147,6 +264,31 @@ test("resolvePlace returns manual confirmation fields for an unresolved Maps URL
     },
   );
   assert.equal(store.creates, 0);
+});
+
+test("resolvePlace reuses a Maps external ID without a provider key", async () => {
+  const existing = place({
+    externalSource: "google",
+    externalPlaceId: "ChIJ-keyless",
+  });
+  const store = new FakePlaceStore([existing]);
+  let fetchCalls = 0;
+  const fetchFn: typeof fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("fetch should not run");
+  };
+
+  for (const parameter of ["query_place_id", "place_id"]) {
+    const resolved = await resolvePlace(
+      {
+        type: "mapsUrl",
+        url: `https://www.google.com/maps/search/?api=1&query=Central&${parameter}=ChIJ-keyless`,
+      },
+      { apiKey: "", fetch: fetchFn, store },
+    );
+    assert.equal(resolved.id, existing.id);
+  }
+  assert.equal(fetchCalls, 0);
 });
 
 test("resolvePlace rejects URLs outside allowed Google Maps hosts", async () => {
@@ -174,6 +316,22 @@ test("resolvePlace rejects URLs outside allowed Google Maps hosts", async () => 
     (error: unknown) =>
       error instanceof PlaceResolutionError &&
       error.code === "INVALID_MAPS_URL",
+  );
+});
+
+test("resolvePlace treats malformed percent encoding as an invalid Maps URL", async () => {
+  await assert.rejects(
+    resolvePlace(
+      {
+        type: "mapsUrl",
+        url: "https://www.google.com/maps/place/%E0%A4%A",
+      },
+      { store: new FakePlaceStore() },
+    ),
+    (error: unknown) =>
+      error instanceof PlaceResolutionError &&
+      error.code === "INVALID_MAPS_URL" &&
+      error.status === 400,
   );
 });
 
@@ -271,6 +429,68 @@ test("searchPlaces merges provider results without duplicating local external ID
 
   assert.equal(results.length, 1);
   assert.equal(results[0]?.source, "local");
+});
+
+test("searchPlaces keeps distinct Google IDs with matching normalized text", async () => {
+  const localManual = place();
+  const fetchFn: typeof fetch = async () =>
+    Response.json({
+      places: [
+        {
+          id: "ChIJ-first",
+          displayName: { text: "Cafe Central" },
+          formattedAddress: "1 Main Street",
+        },
+        {
+          id: "ChIJ-second",
+          displayName: { text: "  CAFE CENTRAL " },
+          formattedAddress: "1 MAIN STREET",
+        },
+      ],
+    });
+
+  const results = await searchPlaces("cafe", {
+    apiKey: "test-key",
+    fetch: fetchFn,
+    store: new FakePlaceStore([localManual]),
+  });
+
+  assert.deepEqual(
+    results.map((candidate) =>
+      candidate.source === "google"
+        ? candidate.externalPlaceId
+        : candidate.id,
+    ),
+    ["place-1", "ChIJ-first", "ChIJ-second"],
+  );
+});
+
+test("searchPlaces dedupes only manual local records by normalized text", async () => {
+  const store = new FakePlaceStore([
+    place({ id: "manual-first" }),
+    place({ id: "manual-duplicate" }),
+    place({
+      id: "google-first",
+      externalSource: "google",
+      externalPlaceId: "ChIJ-first",
+    }),
+    place({
+      id: "google-second",
+      externalSource: "google",
+      externalPlaceId: "ChIJ-second",
+    }),
+  ]);
+
+  const results = await searchPlaces("cafe", { apiKey: "", store });
+
+  assert.deepEqual(
+    results.map((candidate) =>
+      candidate.source === "local"
+        ? candidate.id
+        : candidate.externalPlaceId,
+    ),
+    ["manual-first", "google-first", "google-second"],
+  );
 });
 
 test("parsePlaceInput rejects malformed route payloads", () => {

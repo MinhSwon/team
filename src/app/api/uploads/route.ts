@@ -23,13 +23,39 @@ export type UploadDependencies = {
 };
 
 const maxImageBytes = 5 * 1024 * 1024;
-const imageExtensions = new Map([
-  ["image/jpeg", "jpg"],
-  ["image/png", "png"],
-  ["image/webp", "webp"],
-]);
+const imageExtensions = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+} as const;
+type ImageType = keyof typeof imageExtensions;
 
-function uploadPath(userId: string, file: File): string {
+function isImageType(type: string): type is ImageType {
+  return Object.hasOwn(imageExtensions, type);
+}
+
+function hasImageSignature(type: ImageType, bytes: Uint8Array): boolean {
+  if (type === "image/jpeg") {
+    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+  if (type === "image/png") {
+    return [
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ].every((byte, index) => bytes[index] === byte);
+  }
+  return (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  );
+}
+
+function uploadPath(userId: string, file: File, type: ImageType): string {
   const base =
     file.name
       .replace(/\.[^.]+$/, "")
@@ -39,51 +65,76 @@ function uploadPath(userId: string, file: File): string {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "") || "place";
 
-  return `places/${userId}/${base}.${imageExtensions.get(file.type)}`;
+  return `places/${userId}/${base}.${imageExtensions[type]}`;
 }
 
 export async function handleUpload(
   request: Request,
   dependencies: UploadDependencies,
 ): Promise<Response> {
+  let currentUser: { id: string };
   try {
-    const currentUser = await dependencies.requireUser();
+    currentUser = await dependencies.requireUser();
+  } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      return Response.json({ error: error.message }, { status: 401 });
+    }
+    return Response.json({ error: "Image upload failed" }, { status: 502 });
+  }
 
-    if (!dependencies.token) {
-      return Response.json(
-        { error: "Image uploads are not configured" },
-        { status: 503 },
-      );
-    }
+  if (!dependencies.token) {
+    return Response.json(
+      { error: "Image uploads are not configured" },
+      { status: 503 },
+    );
+  }
 
-    const form = await request.formData();
-    const images = form.getAll("image");
-    if (images.length !== 1 || !(images[0] instanceof File)) {
-      return Response.json(
-        { error: "One image is required" },
-        { status: 400 },
-      );
-    }
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return Response.json(
+      { error: "Invalid multipart form data" },
+      { status: 400 },
+    );
+  }
 
-    const file = images[0];
-    if (!imageExtensions.has(file.type)) {
-      return Response.json(
-        { error: "Image must be JPEG, PNG, or WebP" },
-        { status: 415 },
-      );
-    }
-    if (file.size === 0) {
-      return Response.json({ error: "Image is empty" }, { status: 400 });
-    }
-    if (file.size > maxImageBytes) {
-      return Response.json(
-        { error: "Image must be 5 MB or smaller" },
-        { status: 413 },
-      );
-    }
+  const images = form.getAll("image");
+  if (images.length !== 1 || !(images[0] instanceof File)) {
+    return Response.json(
+      { error: "One image is required" },
+      { status: 400 },
+    );
+  }
 
+  const file = images[0];
+  if (!isImageType(file.type)) {
+    return Response.json(
+      { error: "Image must be JPEG, PNG, or WebP" },
+      { status: 415 },
+    );
+  }
+  if (file.size === 0) {
+    return Response.json({ error: "Image is empty" }, { status: 400 });
+  }
+  if (file.size > maxImageBytes) {
+    return Response.json(
+      { error: "Image must be 5 MB or smaller" },
+      { status: 413 },
+    );
+  }
+
+  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  if (!hasImageSignature(file.type, bytes)) {
+    return Response.json(
+      { error: "Image bytes do not match its file type" },
+      { status: 415 },
+    );
+  }
+
+  try {
     const blob = await dependencies.put(
-      uploadPath(currentUser.id, file),
+      uploadPath(currentUser.id, file, file.type),
       file,
       {
         access: "public",
@@ -94,16 +145,7 @@ export async function handleUpload(
     );
 
     return Response.json({ url: blob.url }, { status: 201 });
-  } catch (error) {
-    if (error instanceof UnauthorizedError) {
-      return Response.json({ error: error.message }, { status: 401 });
-    }
-    if (error instanceof TypeError) {
-      return Response.json(
-        { error: "Invalid multipart form data" },
-        { status: 400 },
-      );
-    }
+  } catch {
     return Response.json({ error: "Image upload failed" }, { status: 502 });
   }
 }

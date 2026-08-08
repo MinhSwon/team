@@ -9,6 +9,28 @@ import {
   type UploadPut,
 } from "./route";
 
+const signatures = {
+  "image/jpeg": new Uint8Array([0xff, 0xd8, 0xff, 0x00]),
+  "image/png": new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  ]),
+  "image/webp": new Uint8Array([
+    0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+  ]),
+} satisfies Record<string, Uint8Array>;
+
+function imageFile(
+  type: keyof typeof signatures,
+  name = "place",
+  extraBytes = 0,
+): File {
+  return new File(
+    [signatures[type], new Uint8Array(extraBytes)],
+    `${name}.${type.split("/")[1]}`,
+    { type },
+  );
+}
+
 function requestWith(file?: File): Request {
   const body = new FormData();
   if (file) body.set("image", file);
@@ -37,7 +59,7 @@ test("handleUpload authenticates before accepting an image", async () => {
   };
 
   const response = await handleUpload(
-    requestWith(new File(["image"], "place.png", { type: "image/png" })),
+    requestWith(imageFile("image/png")),
     dependencies({
       requireUser: async () => {
         throw new UnauthorizedError();
@@ -52,7 +74,7 @@ test("handleUpload authenticates before accepting an image", async () => {
 
 test("handleUpload reports missing Blob configuration clearly", async () => {
   const response = await handleUpload(
-    requestWith(new File(["image"], "place.png", { type: "image/png" })),
+    requestWith(imageFile("image/png")),
     dependencies({ token: undefined }),
   );
 
@@ -70,14 +92,43 @@ test("handleUpload rejects unsupported and oversized files", async () => {
   assert.equal(unsupported.status, 415);
 
   const oversized = await handleUpload(
+    requestWith(imageFile("image/webp", "place", 5 * 1024 * 1024)),
+    dependencies(),
+  );
+  assert.equal(oversized.status, 413);
+});
+
+test("handleUpload rejects files whose bytes do not match the declared image type", async () => {
+  let putCalls = 0;
+  const response = await handleUpload(
     requestWith(
-      new File([new Uint8Array(5 * 1024 * 1024 + 1)], "place.webp", {
-        type: "image/webp",
+      new File(["<script>alert(1)</script>"], "place.png", {
+        type: "image/png",
+      }),
+    ),
+    dependencies({
+      put: async () => {
+        putCalls += 1;
+        return { url: "https://blob.example/image.png" };
+      },
+    }),
+  );
+
+  assert.equal(response.status, 415);
+  assert.equal(putCalls, 0);
+});
+
+test("handleUpload rejects a valid image signature under the wrong MIME type", async () => {
+  const response = await handleUpload(
+    requestWith(
+      new File([signatures["image/jpeg"]], "place.png", {
+        type: "image/png",
       }),
     ),
     dependencies(),
   );
-  assert.equal(oversized.status, 413);
+
+  assert.equal(response.status, 415);
 });
 
 test("handleUpload stores one allowed image under the current user", async () => {
@@ -95,7 +146,7 @@ test("handleUpload stores one allowed image under the current user", async () =>
   };
 
   const response = await handleUpload(
-    requestWith(new File(["webp"], "My Place.webp", { type: "image/webp" })),
+    requestWith(imageFile("image/webp", "My Place")),
     dependencies({ put }),
   );
 
@@ -105,5 +156,48 @@ test("handleUpload stores one allowed image under the current user", async () =>
   assert.equal(token, "blob-token");
   assert.deepEqual(await response.json(), {
     url: "https://blob.example/place.webp",
+  });
+});
+
+test("handleUpload accepts JPEG, PNG, and WebP signatures", async () => {
+  for (const type of Object.keys(signatures) as Array<
+    keyof typeof signatures
+  >) {
+    const response = await handleUpload(
+      requestWith(imageFile(type)),
+      dependencies(),
+    );
+    assert.equal(response.status, 201, type);
+  }
+});
+
+test("handleUpload reports malformed multipart data as a validation error", async () => {
+  const request = new Request("http://localhost/api/uploads", {
+    method: "POST",
+    headers: { "Content-Type": "multipart/form-data; boundary=broken" },
+    body: "not multipart",
+  });
+
+  const response = await handleUpload(request, dependencies());
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: "Invalid multipart form data",
+  });
+});
+
+test("handleUpload reports Blob TypeError as provider failure", async () => {
+  const response = await handleUpload(
+    requestWith(imageFile("image/png")),
+    dependencies({
+      put: async () => {
+        throw new TypeError("network failed");
+      },
+    }),
+  );
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), {
+    error: "Image upload failed",
   });
 });
