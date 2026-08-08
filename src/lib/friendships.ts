@@ -42,10 +42,11 @@ export interface FriendshipStore {
   findFriendshipByPairKey(pairKey: string): Promise<Friendship | null>;
   findFriendshipById(id: string): Promise<Friendship | null>;
   createFriendship(input: NewFriendship): Promise<Friendship>;
-  updateFriendshipStatus(
-    id: string,
-    status: FriendshipStatus,
-  ): Promise<Friendship>;
+  transitionPendingFriendship(input: {
+    id: string;
+    addresseeId: string;
+    status: Extract<FriendshipStatus, "ACCEPTED" | "REJECTED">;
+  }): Promise<Friendship | null>;
   deleteFriendship(id: string): Promise<Friendship>;
   createNotification(input: NewNotification): Promise<void>;
   findPost(id: string): Promise<Post | null>;
@@ -137,8 +138,14 @@ function createPrismaStore(
     findFriendshipById: (id) =>
       client.friendship.findUnique({ where: { id } }),
     createFriendship: (data) => client.friendship.create({ data }),
-    updateFriendshipStatus: (id, status) =>
-      client.friendship.update({ where: { id }, data: { status } }),
+    transitionPendingFriendship: async ({ id, addresseeId, status }) => {
+      const result = await client.friendship.updateMany({
+        where: { id, addresseeId, status: "PENDING" },
+        data: { status },
+      });
+      if (result.count === 0) return null;
+      return client.friendship.findUnique({ where: { id } });
+    },
     deleteFriendship: (id) => client.friendship.delete({ where: { id } }),
     createNotification: async (data) => {
       await client.notification.create({ data });
@@ -240,10 +247,19 @@ export async function respondToFriendRequest(
       );
     }
 
-    const updated = await store.updateFriendshipStatus(
-      friendshipId,
-      action === "accept" ? "ACCEPTED" : "REJECTED",
-    );
+    const updated = await store.transitionPendingFriendship({
+      id: friendshipId,
+      addresseeId: currentUserId,
+      status: action === "accept" ? "ACCEPTED" : "REJECTED",
+    });
+
+    if (!updated) {
+      throw new FriendshipError(
+        "Friend request is no longer pending",
+        "INVALID_STATE",
+        409,
+      );
+    }
 
     if (action === "accept") {
       await store.createNotification({

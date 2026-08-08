@@ -35,22 +35,69 @@ class FakeFriendshipPersistence implements FriendshipPersistence {
   failNotification = false;
   missingAddressee = false;
   private nextId = 1;
+  private responseGate: Promise<void> | null = null;
+  private releaseResponses: (() => void) | null = null;
+  private responseReadsRemaining = 0;
 
   async transaction<T>(
     operation: (store: FriendshipStore) => Promise<T>,
   ): Promise<T> {
-    const snapshot = structuredClone({
-      friendships: this.friendships,
-      notifications: this.notifications,
-      nextId: this.nextId,
-    });
+    const undo: Array<() => void> = [];
+    const store: FriendshipStore = {
+      findFriendshipByPairKey: (pairKey) =>
+        this.findFriendshipByPairKey(pairKey),
+      findFriendshipById: (id) => this.findFriendshipById(id),
+      createFriendship: async (input) => {
+        const friendship = await this.createFriendship(input);
+        undo.push(() => {
+          this.friendships = this.friendships.filter(
+            (item) => item.id !== friendship.id,
+          );
+        });
+        return friendship;
+      },
+      transitionPendingFriendship: async (input) => {
+        const previous = this.friendships.find(
+          (friendship) => friendship.id === input.id,
+        );
+        const updated = await this.transitionPendingFriendship(input);
+
+        if (updated && previous) {
+          const snapshot = structuredClone(previous);
+          undo.push(() => {
+            const index = this.friendships.findIndex(
+              (friendship) => friendship.id === input.id,
+            );
+            if (index >= 0) this.friendships[index] = snapshot;
+          });
+        }
+
+        return updated;
+      },
+      deleteFriendship: async (id) => {
+        const index = this.friendships.findIndex(
+          (friendship) => friendship.id === id,
+        );
+        const friendship = await this.deleteFriendship(id);
+        undo.push(() => {
+          this.friendships.splice(index, 0, friendship);
+        });
+        return friendship;
+      },
+      createNotification: async (notification) => {
+        await this.createNotification(notification);
+        undo.push(() => {
+          const index = this.notifications.lastIndexOf(notification);
+          if (index >= 0) this.notifications.splice(index, 1);
+        });
+      },
+      findPost: (id) => this.findPost(id),
+    };
 
     try {
-      return await operation(this);
+      return await operation(store);
     } catch (error) {
-      this.friendships = snapshot.friendships;
-      this.notifications = snapshot.notifications;
-      this.nextId = snapshot.nextId;
+      for (const rollback of undo.reverse()) rollback();
       throw error;
     }
   }
@@ -63,9 +110,18 @@ class FakeFriendshipPersistence implements FriendshipPersistence {
   }
 
   async findFriendshipById(id: string) {
-    return (
+    const friendship =
       this.friendships.find((friendship) => friendship.id === id) ?? null
-    );
+
+    if (this.responseGate && this.responseReadsRemaining > 0) {
+      const snapshot = friendship ? structuredClone(friendship) : null;
+      this.responseReadsRemaining -= 1;
+      if (this.responseReadsRemaining === 0) this.releaseResponses?.();
+      await this.responseGate;
+      return snapshot;
+    }
+
+    return friendship;
   }
 
   async createFriendship(input: {
@@ -94,13 +150,26 @@ class FakeFriendshipPersistence implements FriendshipPersistence {
     return friendship;
   }
 
-  async updateFriendshipStatus(id: string, status: FriendshipStatus) {
-    const friendship = await this.findFriendshipById(id);
-    if (!friendship) throw { code: "P2025" };
+  async transitionPendingFriendship(input: {
+    id: string;
+    addresseeId: string;
+    status: Extract<FriendshipStatus, "ACCEPTED" | "REJECTED">;
+  }) {
+    const index = this.friendships.findIndex(
+      (friendship) =>
+        friendship.id === input.id &&
+        friendship.addresseeId === input.addresseeId &&
+        friendship.status === "PENDING",
+    );
+    if (index < 0) return null;
 
-    friendship.status = status;
-    friendship.updatedAt = new Date("2026-08-08T00:01:00.000Z");
-    return friendship;
+    const updated: Friendship = {
+      ...this.friendships[index],
+      status: input.status,
+      updatedAt: new Date("2026-08-08T00:01:00.000Z"),
+    };
+    this.friendships[index] = updated;
+    return structuredClone(updated);
   }
 
   async deleteFriendship(id: string) {
@@ -133,6 +202,13 @@ class FakeFriendshipPersistence implements FriendshipPersistence {
     };
     this.posts.push(post);
     return post;
+  }
+
+  competeNextResponses() {
+    this.responseReadsRemaining = 2;
+    this.responseGate = new Promise((resolve) => {
+      this.releaseResponses = resolve;
+    });
   }
 }
 
@@ -220,6 +296,46 @@ test("addressee can reject a pending request", async () => {
     persistence.notifications.map((notification) => notification.type),
     ["FRIEND_REQUEST"],
   );
+});
+
+test("competing responses allow one transition and matching notification", async () => {
+  for (const actions of [
+    ["accept", "accept"],
+    ["accept", "reject"],
+  ] as const) {
+    const persistence = new FakeFriendshipPersistence();
+    const request = await requestFriendship("user-a", "user-b", persistence);
+    persistence.competeNextResponses();
+
+    const results = await Promise.allSettled(
+      actions.map((action) =>
+        respondToFriendRequest("user-b", request.id, action, persistence),
+      ),
+    );
+
+    assert.equal(
+      results.filter((result) => result.status === "fulfilled").length,
+      1,
+    );
+    assert.equal(
+      results.filter(
+        (result) =>
+          result.status === "rejected" &&
+          result.reason instanceof FriendshipError &&
+          result.reason.code === "INVALID_STATE",
+      ).length,
+      1,
+    );
+
+    const finalStatus = persistence.friendships[0]?.status;
+    assert.ok(finalStatus === "ACCEPTED" || finalStatus === "REJECTED");
+    assert.equal(
+      persistence.notifications.filter(
+        (notification) => notification.type === "FRIEND_ACCEPTED",
+      ).length,
+      finalStatus === "ACCEPTED" ? 1 : 0,
+    );
+  }
 });
 
 test("participants can remove an accepted friendship", async () => {

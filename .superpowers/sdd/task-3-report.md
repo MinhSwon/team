@@ -118,3 +118,65 @@ Full lint debt remains in legacy Task 7 files including `src/app/decide`,
   default `BETTER_AUTH_SECRET`.
 - Legacy `src/app/api/groups/route.ts` remains intentionally for Task 7;
   active Groups page was removed as required.
+
+## Review Fix: Atomic Friendship Responses
+
+### RED
+
+Added a barrier-based stateful persistence test where two transactions both
+read the same pending request before either attempts its transition.
+
+Cases:
+
+- Competing `accept` and `accept`.
+- Competing `accept` and `reject`.
+
+Initial result:
+
+```text
+npm test -- --test-name-pattern="competing responses"
+FAIL: expected 1 fulfilled response, received 2
+```
+
+This reproduced the stale read plus unconditional update race and duplicate
+acceptance notification risk.
+
+### GREEN
+
+- Replaced unconditional friendship status update with a conditional
+  transition containing `id`, `addresseeId`, and `status: PENDING`.
+- Prisma uses `updateMany`; zero affected rows returns `INVALID_STATE`.
+- `FRIEND_ACCEPTED` is created only after the conditional accept wins and
+  remains inside the same transaction.
+- Fake persistence now uses atomic compare-and-set behavior and
+  transaction-local undo operations. Competing transactions are not globally
+  serialized and a losing transaction cannot restore the winner's state.
+- Friends UI now separates search state from a global friendship mutation
+  state. All send, accept, reject, and remove controls disable while any
+  friendship mutation is active; mutation handlers also reject overlap.
+- Inline API errors remain unchanged.
+
+### Verification
+
+```text
+npm test -- --test-name-pattern="competing responses"
+PASS
+
+npm test
+PASS: 23 tests, 0 failures
+
+npx eslint 'src/lib/friendships.ts' 'src/lib/friendships.test.ts' 'src/app/(app)/friends/FriendsClient.tsx'
+PASS
+
+npx tsc --noEmit
+PASS
+
+npx react-doctor@latest --verbose --scope changed
+PASS: 71/100, no issues found
+
+npm run build
+PASS: BUILD_EXIT=0
+```
+
+Build continues to emit the existing Better Auth environment warnings listed
+above.

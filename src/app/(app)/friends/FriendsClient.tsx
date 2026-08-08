@@ -95,7 +95,8 @@ export default function FriendsClient({
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Person[]>([]);
   const [errors, setErrors] = useState<Partial<Record<ErrorKey, string>>>({});
-  const [busy, setBusy] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [mutationBusy, setMutationBusy] = useState(false);
 
   const setError = useCallback((key: ErrorKey, value?: string) => {
     setErrors((current) => ({ ...current, [key]: value }));
@@ -127,7 +128,7 @@ export default function FriendsClient({
       return;
     }
 
-    setBusy("search");
+    setSearching(true);
     setError("search");
     try {
       const data = await api<{ users: Person[] }>(
@@ -137,12 +138,13 @@ export default function FriendsClient({
     } catch (error) {
       setError("search", message(error));
     } finally {
-      setBusy("");
+      setSearching(false);
     }
   }
 
   async function sendRequest(person: Person) {
-    setBusy(`send:${person.id}`);
+    if (mutationBusy) return;
+    setMutationBusy(true);
     setError("search");
     try {
       await api("/api/friends", {
@@ -155,12 +157,13 @@ export default function FriendsClient({
     } catch (error) {
       setError("search", message(error));
     } finally {
-      setBusy("");
+      setMutationBusy(false);
     }
   }
 
   async function respond(id: string, action: "accept" | "reject") {
-    setBusy(`${action}:${id}`);
+    if (mutationBusy) return;
+    setMutationBusy(true);
     setError("incoming");
     try {
       await api(`/api/friends/${id}`, {
@@ -174,12 +177,13 @@ export default function FriendsClient({
     } catch (error) {
       setError("incoming", message(error));
     } finally {
-      setBusy("");
+      setMutationBusy(false);
     }
   }
 
   async function remove(id: string) {
-    setBusy(`remove:${id}`);
+    if (mutationBusy) return;
+    setMutationBusy(true);
     setError("accepted");
     try {
       await api(`/api/friends/${id}`, { method: "DELETE" });
@@ -187,7 +191,7 @@ export default function FriendsClient({
     } catch (error) {
       setError("accepted", message(error));
     } finally {
-      setBusy("");
+      setMutationBusy(false);
     }
   }
 
@@ -213,7 +217,7 @@ export default function FriendsClient({
             <button
               aria-label="Search"
               className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50"
-              disabled={busy === "search"}
+              disabled={searching}
               title="Search"
               type="submit"
             >
@@ -231,7 +235,7 @@ export default function FriendsClient({
                     <button
                       aria-label={`Send friend request to ${person.name}`}
                       className="grid h-9 w-9 place-items-center rounded-md text-slate-300 hover:bg-slate-800 hover:text-amber-400 disabled:opacity-50"
-                      disabled={busy === `send:${person.id}`}
+                      disabled={mutationBusy}
                       onClick={() => sendRequest(person)}
                       title="Send friend request"
                       type="button"
@@ -266,7 +270,7 @@ export default function FriendsClient({
                         <button
                           aria-label={`Accept ${item.user.name}`}
                           className="grid h-9 w-9 place-items-center rounded-md text-emerald-400 hover:bg-slate-800 disabled:opacity-50"
-                          disabled={busy.endsWith(`:${item.id}`)}
+                          disabled={mutationBusy}
                           onClick={() => respond(item.id, "accept")}
                           title="Accept"
                           type="button"
@@ -276,7 +280,7 @@ export default function FriendsClient({
                         <button
                           aria-label={`Reject ${item.user.name}`}
                           className="grid h-9 w-9 place-items-center rounded-md text-rose-400 hover:bg-slate-800 disabled:opacity-50"
-                          disabled={busy.endsWith(`:${item.id}`)}
+                          disabled={mutationBusy}
                           onClick={() => respond(item.id, "reject")}
                           title="Reject"
                           type="button"
@@ -335,7 +339,7 @@ export default function FriendsClient({
                     <button
                       aria-label={`Remove ${item.user.name}`}
                       className="grid h-9 w-9 place-items-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-rose-400 disabled:opacity-50"
-                      disabled={busy === `remove:${item.id}`}
+                      disabled={mutationBusy}
                       onClick={() => remove(item.id)}
                       title="Remove friend"
                       type="button"
