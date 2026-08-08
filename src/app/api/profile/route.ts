@@ -20,7 +20,7 @@ const dependencies: ProfileRouteDependencies = {
   updateProfile,
 };
 
-function errorResponse(error: unknown): Response {
+function errorResponse(error: unknown, fallback: string): Response {
   if (error instanceof UnauthorizedError) {
     return Response.json({ error: error.message }, { status: 401 });
   }
@@ -30,7 +30,7 @@ function errorResponse(error: unknown): Response {
   if (error instanceof SyntaxError) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  return Response.json({ error: "Could not update profile" }, { status: 500 });
+  return Response.json({ error: fallback }, { status: 500 });
 }
 
 export async function handleProfileGet(
@@ -50,7 +50,7 @@ export async function handleProfileGet(
       await profileDependencies.getProfile(currentUser.id, username),
     );
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, "Could not load profile");
   }
 }
 
@@ -67,7 +67,7 @@ export async function handleProfilePatch(
       ),
     );
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, "Could not update profile");
   }
 }
 

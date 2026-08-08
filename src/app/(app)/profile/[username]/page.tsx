@@ -33,7 +33,7 @@ export default async function ProfilePage({
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 pb-24 text-slate-100 md:pb-12">
+    <div className="min-h-screen bg-slate-950 text-slate-100 md:pb-12">
       <Navigation />
       <main className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
         <section className="flex items-start gap-4 border-b border-slate-800 pb-7">
@@ -98,7 +98,7 @@ export default async function ProfilePage({
                 return (
                   <article className="py-5" key={post.id}>
                     <Link
-                      className="group grid gap-4 sm:grid-cols-[8rem_1fr]"
+                      className="group grid min-w-0 gap-4 sm:grid-cols-[8rem_1fr]"
                       href={`/places/${post.savedPlace.place.id}`}
                     >
                       {image ? (
@@ -112,20 +112,20 @@ export default async function ProfilePage({
                         <span className="hidden rounded-md bg-slate-900 sm:block" />
                       )}
                       <span className="min-w-0">
-                        <span className="flex items-start justify-between gap-3">
-                          <span className="break-words font-semibold text-white group-hover:text-amber-400">
+                        <span className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+                          <span className="min-w-0 [overflow-wrap:anywhere] font-semibold text-white group-hover:text-amber-400">
                             {post.savedPlace.place.name}
                           </span>
                           <time
-                            className="shrink-0 text-xs text-slate-500"
+                            className="shrink-0 self-start text-xs text-slate-500"
                             dateTime={post.createdAt.toISOString()}
                           >
                             {dateFormat.format(post.createdAt)}
                           </time>
                         </span>
-                        <span className="mt-1 flex items-start gap-1.5 text-sm text-slate-400">
+                        <span className="mt-1 flex min-w-0 items-start gap-1.5 text-sm text-slate-400">
                           <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
-                          <span className="break-words">
+                          <span className="min-w-0 [overflow-wrap:anywhere]">
                             {post.savedPlace.place.address}
                             {post.savedPlace.place.area
                               ? `, ${post.savedPlace.place.area}`

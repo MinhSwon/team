@@ -24,5 +24,9 @@ export default async function AppLayout({
 }) {
   await protectAppRoute();
 
-  return children;
+  return (
+    <div className="min-h-screen pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">
+      {children}
+    </div>
+  );
 }

@@ -175,3 +175,84 @@ authorization-before-read/write ordering documented in Task 6.
 ## Commit
 
 Message: `feat: complete private social place experience`
+
+---
+
+## Review Fixes
+
+Date: August 8, 2026
+
+### Findings Addressed
+
+- Replaced profile field state derived from props with uncontrolled native
+  inputs and `FormData`.
+- Kept inline pending, error, and success states.
+- Added form reset plus server refresh so normalized or refreshed profile props
+  replace stale DOM values.
+- Added `min-w-0` and `overflow-wrap:anywhere` to profile post content.
+- Stacked post date below long place names on narrow screens and restored
+  side-by-side layout at `sm`.
+- Moved mobile bottom-nav clearance to protected `(app)` layout using
+  `calc(4rem + env(safe-area-inset-bottom))`.
+- Removed fixed mobile `pb-24` from every protected page. Desktop `md:pb-12`
+  page spacing remains unchanged.
+- Changed unexpected profile GET response to `Could not load profile`.
+- Added real GET and PATCH HTTP 401 tests by injecting
+  `UnauthorizedError` from `requireUser`.
+- Removed unused `clsx` and `tailwind-merge` dependencies and lock entries.
+
+### Review RED
+
+1. `npx react-doctor@latest --verbose --scope changed`
+   - Score 69/100, six warnings.
+   - Two Task 7 `react-doctor/no-derived-useState` warnings in
+     `ProfileForm.tsx`.
+2. `npx tsx --test src/app/api/profile/route.test.ts`
+   - One failure: GET returned `Could not update profile` instead of
+     `Could not load profile`.
+   - New GET/PATCH 401 test passed immediately, confirming behavior existed and
+     coverage was missing.
+3. `npx tsx --test 'src/app/(app)/layout.test.ts'
+   'src/app/(app)/profile/routes.test.ts'`
+   - Three failures: shell safe-area clearance absent, profile form used
+     prop-derived state, and narrow profile post layout lacked required wrap
+     structure.
+4. `rg -n '"(clsx|tailwind-merge)"' package.json package-lock.json`
+   - Eight matches before uninstall.
+5. Refresh regression test
+   - One failure until successful submissions reset uncontrolled DOM values
+     before `router.refresh()`.
+6. Initial final build
+   - Exit 1 because new test used regex `s` flag while TypeScript targets
+     ES2017.
+   - Replaced flag with `[\s\S]*`; production code was unaffected.
+
+### Review GREEN
+
+- Targeted profile API/layout/profile route run: 16 passed.
+- Refresh-safe profile route tests: 4 passed.
+- `clsx`/`tailwind-merge` usage and lock scan: no matches.
+- `npm test`: exit 0, 112 passed, 0 failed.
+- `npm run lint`: exit 0, no warnings or errors.
+- `npm run build`: exit 0.
+- `git diff --check`: exit 0 with repository line-ending notices only.
+
+### Current React Doctor
+
+```powershell
+npx react-doctor@latest --verbose --scope changed
+```
+
+Result: exit 0, score 76/100, four warnings. Both Task 7
+`no-derived-useState` warnings are removed. Remaining findings:
+
+- `src/app/api/uploads/route.ts:42`
+- `src/lib/interactions.ts:300`
+- `src/lib/interactions.ts:356`
+- `src/lib/posts.ts:215`
+
+These are unchanged inherited findings outside Task 7 review scope.
+
+### Review Commit
+
+Message: `fix: address Task 7 review findings`

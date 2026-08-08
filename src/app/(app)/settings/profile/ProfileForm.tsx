@@ -16,23 +16,29 @@ const inputClassName =
 
 export default function ProfileForm({ profile }: { profile: Profile }) {
   const router = useRouter();
-  const [name, setName] = useState(profile.name);
-  const [username, setUsername] = useState(profile.username);
-  const [bio, setBio] = useState(profile.bio ?? "");
-  const [avatar, setAvatar] = useState(profile.avatar ?? "");
-  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState<{
+    kind: "error" | "success";
+    message: string;
+  } | null>(null);
   const [pending, setPending] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError("");
+    const formElement = event.currentTarget;
+    const form = new FormData(event.currentTarget);
+    setFeedback(null);
     setPending(true);
 
     try {
       const response = await fetch("/api/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, username, bio, avatar }),
+        body: JSON.stringify({
+          name: form.get("name"),
+          username: form.get("username"),
+          bio: form.get("bio"),
+          avatar: form.get("avatar"),
+        }),
       });
       const body: unknown = await response.json();
       if (!response.ok) {
@@ -53,30 +59,39 @@ export default function ProfileForm({ profile }: { profile: Profile }) {
       ) {
         throw new Error("Invalid profile response");
       }
-      router.push(`/profile/${body.username}`);
+      setFeedback({ kind: "success", message: "Profile updated" });
+      formElement.reset();
       router.refresh();
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Could not update profile",
-      );
+      setFeedback({
+        kind: "error",
+        message:
+          requestError instanceof Error
+            ? requestError.message
+            : "Could not update profile",
+      });
     } finally {
       setPending(false);
     }
   }
 
   return (
-    <form className="space-y-5" onSubmit={submit}>
+    <form
+      className="space-y-5"
+      key={[profile.name, profile.username, profile.bio, profile.avatar].join(
+        "\0",
+      )}
+      onSubmit={submit}
+    >
       <label className="block text-sm font-medium text-slate-200">
         Name
         <input
           autoComplete="name"
           className={inputClassName}
+          defaultValue={profile.name}
           maxLength={80}
-          onChange={(event) => setName(event.target.value)}
+          name="name"
           required
-          value={name}
         />
       </label>
 
@@ -86,12 +101,12 @@ export default function ProfileForm({ profile }: { profile: Profile }) {
           autoCapitalize="none"
           autoComplete="username"
           className={inputClassName}
+          defaultValue={profile.username}
           maxLength={30}
           minLength={3}
-          onChange={(event) => setUsername(event.target.value)}
+          name="username"
           pattern="[A-Za-z0-9._]+"
           required
-          value={username}
         />
       </label>
 
@@ -99,13 +114,10 @@ export default function ProfileForm({ profile }: { profile: Profile }) {
         Bio
         <textarea
           className={`${inputClassName} min-h-28 resize-y`}
+          defaultValue={profile.bio ?? ""}
           maxLength={500}
-          onChange={(event) => setBio(event.target.value)}
-          value={bio}
+          name="bio"
         />
-        <span className="mt-1 block text-xs text-slate-500">
-          {bio.length}/500
-        </span>
       </label>
 
       <label className="block text-sm font-medium text-slate-200">
@@ -113,17 +125,23 @@ export default function ProfileForm({ profile }: { profile: Profile }) {
         <input
           autoComplete="url"
           className={inputClassName}
+          defaultValue={profile.avatar ?? ""}
           maxLength={500}
-          onChange={(event) => setAvatar(event.target.value)}
+          name="avatar"
           placeholder="https://"
           type="url"
-          value={avatar}
         />
       </label>
 
-      {error && (
-        <p className="text-sm text-rose-400" role="alert">
-          {error}
+      {feedback && (
+        <p
+          aria-live="polite"
+          className={`text-sm ${
+            feedback.kind === "error" ? "text-rose-400" : "text-emerald-400"
+          }`}
+          role={feedback.kind === "error" ? "alert" : "status"}
+        >
+          {feedback.message}
         </p>
       )}
 

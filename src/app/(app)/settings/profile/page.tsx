@@ -7,7 +7,7 @@ export default async function ProfileSettingsPage() {
   const currentUser = await requireCurrentUser();
 
   return (
-    <div className="min-h-screen bg-slate-950 pb-24 text-slate-100 md:pb-12">
+    <div className="min-h-screen bg-slate-950 text-slate-100 md:pb-12">
       <Navigation />
       <main className="mx-auto max-w-2xl px-4 py-8 sm:px-6">
         <div className="mb-7 border-b border-slate-800 pb-5">

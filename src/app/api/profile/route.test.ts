@@ -5,6 +5,7 @@ import {
   handleProfileGet,
   handleProfilePatch,
 } from "./route";
+import { UnauthorizedError } from "@/lib/current-user";
 
 test("profile GET uses session viewer and returns public fields only", async () => {
   let viewerId = "";
@@ -75,7 +76,7 @@ test("profile PATCH updates only session user identity", async () => {
   });
 });
 
-test("profile API requires username and authenticated session", async () => {
+test("profile API requires username", async () => {
   const dependencies = {
     requireUser: async () => ({ id: "viewer-1" }),
     getProfile: async () => {
@@ -93,5 +94,59 @@ test("profile API requires username and authenticated session", async () => {
   assert.equal(missingUsername.status, 400);
   assert.deepEqual(await missingUsername.json(), {
     error: "username is required",
+  });
+});
+
+test("profile GET and PATCH return 401 when session identity is absent", async () => {
+  const dependencies = {
+    requireUser: async () => {
+      throw new UnauthorizedError();
+    },
+    getProfile: async () => {
+      throw new Error("must not read profile");
+    },
+    updateProfile: async () => {
+      throw new Error("must not update profile");
+    },
+  };
+
+  const responses = await Promise.all([
+    handleProfileGet(
+      new Request("http://localhost/api/profile?username=alice"),
+      dependencies,
+    ),
+    handleProfilePatch(
+      new Request("http://localhost/api/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Alice" }),
+      }),
+      dependencies,
+    ),
+  ]);
+
+  for (const response of responses) {
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: "Unauthorized" });
+  }
+});
+
+test("profile GET uses read-specific unexpected error wording", async () => {
+  const response = await handleProfileGet(
+    new Request("http://localhost/api/profile?username=alice"),
+    {
+      requireUser: async () => ({ id: "viewer-1" }),
+      getProfile: async () => {
+        throw new Error("database unavailable");
+      },
+      updateProfile: async () => {
+        throw new Error("unused");
+      },
+    },
+  );
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), {
+    error: "Could not load profile",
   });
 });

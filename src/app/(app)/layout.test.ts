@@ -123,3 +123,32 @@ test("mobile navigation keeps five stable product actions", () => {
   assert.match(source, /grid-cols-5/);
   assert.doesNotMatch(source, /grid-cols-6/);
 });
+
+test("protected shell owns mobile bottom-nav safe-area clearance", () => {
+  const layoutSource = readFileSync(
+    new URL("./layout.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    layoutSource,
+    /pb-\[calc\(4rem\+env\(safe-area-inset-bottom\)\)\] md:pb-0/,
+  );
+
+  for (const path of [
+    "add/page.tsx",
+    "feed/page.tsx",
+    "friends/FriendsClient.tsx",
+    "notifications/page.tsx",
+    "places/[id]/page.tsx",
+    "profile/[username]/page.tsx",
+    "saved/page.tsx",
+    "settings/profile/page.tsx",
+  ]) {
+    assert.doesNotMatch(
+      readFileSync(new URL(path, import.meta.url), "utf8"),
+      /pb-24/,
+      path,
+    );
+  }
+});
