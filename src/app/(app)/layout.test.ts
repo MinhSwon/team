@@ -104,3 +104,11 @@ test("every active navigation route uses the protected route group", () => {
     );
   }
 });
+
+test("protected add route renders the unified add-place flow", () => {
+  const protectedAdd = new URL("./add/page.tsx", import.meta.url);
+  const source = readFileSync(protectedAdd, "utf8");
+
+  assert.match(source, /AddPlaceModal/);
+  assert.equal(existsSync(new URL("../add/page.tsx", import.meta.url)), false);
+});
