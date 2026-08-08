@@ -341,3 +341,92 @@ conflicting saved-place/Post IDs before any user-data mutation.
   ordering/data-preservation assertions, Prisma validation, tests, and build.
 - Build logs warn that `BETTER_AUTH_SECRET` uses its default value in this local
   environment. Build still exits 0; deployment must set a production secret.
+
+## Final Metadata Conflict Guards - 2026-08-08
+
+### Status
+
+Added transaction preflight guards for conflicting Place and UserSavedPlace
+metadata. Every guard completes before the first `UPDATE` or `DELETE`.
+Non-conflicting nullable Place metadata is copied to the deterministic survivor;
+tags, images, and a sole Post retain the existing lossless merge behavior.
+
+### RED
+
+- `npx tsx --test src/lib/places.test.ts`: exit 1; 21 tests, 20 passed,
+  1 failed. The migration regression failed on missing
+  `count(DISTINCT place."name") > 1`, proving the existing SQL lacked the
+  required Place metadata guard.
+- First run after SQL changes: exit 1; 21 tests, 20 passed, 1 failed. All new
+  guard assertions passed; the old generic `UPDATE "Place"` selector matched
+  the new metadata-preservation update instead of the later dedupe-key
+  backfill. The test was narrowed to `SET "dedupeKey"`.
+
+### GREEN
+
+- Focused migration test:
+  `npx tsx --test src/lib/places.test.ts`: exit 0; 21 passed, 0 failed.
+- `npm test`: exit 0; 57 passed, 0 failed.
+- Focused lint:
+  `npx eslint "src/lib/places.test.ts"`: exit 0, no output.
+- Static guard ordering scan: all true:
+  `PLACE_GUARD_BEFORE_UPDATE`,
+  `SAVED_GUARD_BEFORE_UPDATE`,
+  `POST_GUARD_BEFORE_UPDATE`,
+  `ALL_GUARDS_BEFORE_DELETE`,
+  `NO_POST_DELETE`, and `NO_IMAGE_DELETE`.
+- `npx prisma validate`: exit 0; schema valid.
+- Baseline static check:
+  `npx prisma migrate diff --from-empty --to-schema <schema from commit 3473690> --script`:
+  exit 0; `BASELINE_DIFF_MATCH`.
+- Current schema static check:
+  `npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script`:
+  exit 0; `CURRENT_EMPTY_DIFF_VALID`, SHA-256
+  `49E1B626D5DD43660EF409506D7D5E9A4BEE7502BBF377D07EAEC1FFBD202E17`.
+- `npm run build` with `GOOGLE_MAPS_API_KEY` and
+  `BLOB_READ_WRITE_TOKEN` explicitly unset: exit 0; all 21 static pages
+  generated.
+
+### Migration Behavior
+
+- Place guard aborts on more than one distinct non-null `name`, `address`,
+  `area`, `latitude`, `longitude`, `website`, or `externalSource`.
+- Place conflict reports include computed `dedupeKey`, sorted Place IDs, and
+  conflicting field names.
+- Single non-null nullable Place values are copied to the survivor.
+  Earliest `createdAt` remains through survivor selection; latest `updatedAt`
+  is retained.
+- UserSavedPlace guard aborts on more than one distinct non-null `rating`,
+  `review`, or `sourcePostId` for the same user and Place dedupe group.
+- Saved-place conflict reports include `dedupeKey`, user ID, sorted saved-place
+  IDs, and conflicting field names.
+- Multiple-Post abort reports now include `dedupeKey`, user ID, sorted
+  saved-place IDs, and sorted Post IDs.
+- Explicit table locks keep guard results stable until merge completion.
+- Tags remain a sorted distinct union. All images move. One Post moves.
+  No Post or SavedPlaceImage is deleted.
+
+### Files
+
+- `prisma/migrations/20260808010000_backfill_place_dedupe_key/migration.sql`
+- `src/lib/places.test.ts`
+- `.superpowers/sdd/task-4-report.md`
+
+### Self-Review
+
+- All conflict checks use `count(DISTINCT ...)`, which ignores null and permits
+  identical non-null values as required.
+- All three `RAISE EXCEPTION` paths occur before the first data update/delete.
+- Place fields excluded from conflict checks are lossless by construction:
+  normalized fields define the group, `externalPlaceId` is null by selection,
+  `dedupeKey` is newly added, earliest creation time identifies the survivor,
+  and latest update time is copied.
+- No unrelated product files changed. Existing untracked SDD files remain
+  untouched.
+
+### Concerns
+
+- No PostgreSQL server or shadow database is available, so data-path SQL was
+  not executed. Static migration assertions, Prisma schema diffs, full tests,
+  and production build are green.
+- Build retains the existing local default-`BETTER_AUTH_SECRET` warning.

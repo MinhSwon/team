@@ -307,14 +307,22 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   const merge = sql.indexOf('CREATE TEMP TABLE "_manual_place_duplicates"');
   const repoint = sql.indexOf('UPDATE "UserSavedPlace"');
   const removeDuplicates = sql.indexOf('DELETE FROM "Place"');
-  const backfill = sql.indexOf('UPDATE "Place"');
+  const backfill = sql.indexOf('UPDATE "Place"\nSET "dedupeKey"');
   const uniqueIndex = sql.indexOf(
     'CREATE UNIQUE INDEX "Place_dedupeKey_key"',
   );
   const conflictAbort = sql.indexOf(
     "Cannot merge duplicate saved places without deleting posts",
   );
-  const firstUserDataMutation = sql.indexOf('UPDATE "UserSavedPlace"');
+  const placeMetadataAbort = sql.indexOf(
+    "Cannot merge duplicate Places with conflicting metadata",
+  );
+  const savedPlaceMetadataAbort = sql.indexOf(
+    "Cannot merge duplicate saved places with conflicting metadata",
+  );
+  const firstUpdate = sql.indexOf('\nUPDATE "');
+  const firstDelete = sql.indexOf('\nDELETE FROM "');
+  const firstDestructiveStatement = Math.min(firstUpdate, firstDelete);
   const begin = sql.indexOf("BEGIN;");
   const commit = sql.lastIndexOf("COMMIT;");
 
@@ -336,13 +344,54 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   assert.match(sql, /array_agg\(\s*"sourcePostId"/);
   assert.match(sql, /SELECT DISTINCT tag/);
   assert.match(sql, /RAISE EXCEPTION[\s\S]*conflicting_post_ids/);
+  for (const field of [
+    "name",
+    "address",
+    "area",
+    "latitude",
+    "longitude",
+    "website",
+    "externalSource",
+  ]) {
+    assert.match(
+      sql,
+      new RegExp(`count\\(DISTINCT place\\."${field}"\\) > 1`),
+    );
+  }
+  for (const field of ["rating", "review", "sourcePostId"]) {
+    assert.match(
+      sql,
+      new RegExp(`count\\(DISTINCT saved_place\\."${field}"\\) > 1`),
+    );
+  }
+  assert.match(
+    sql,
+    /dedupeKey=%s placeIds=\[%s\] fields=\[%s\]/,
+  );
+  assert.match(
+    sql,
+    /dedupeKey=%s userId=%s savedPlaceIds=\[%s\] fields=\[%s\]/,
+  );
+  assert.match(
+    sql,
+    /dedupeKey=%s userId=%s savedPlaceIds=\[%s\] postIds=\[%s\]/,
+  );
+  assert.match(sql, /UPDATE "Place" survivor[\s\S]*"area" = metadata\."area"/);
+  assert.match(sql, /"latitude" = metadata\."latitude"/);
+  assert.match(sql, /"longitude" = metadata\."longitude"/);
+  assert.match(sql, /"website" = metadata\."website"/);
+  assert.match(sql, /"externalSource" = metadata\."externalSource"/);
   assert.match(sql, /DELETE FROM "UserSavedPlace"/);
   assert.doesNotMatch(sql, /DELETE FROM "Post"/);
   assert.doesNotMatch(sql, /DELETE FROM "SavedPlaceImage"/);
   assert.match(sql, /"dedupeKey" IS NULL/);
   assert.equal(begin, 0);
+  assert.ok(placeMetadataAbort > 0);
+  assert.ok(savedPlaceMetadataAbort > 0);
   assert.ok(conflictAbort > 0);
-  assert.ok(firstUserDataMutation > conflictAbort);
+  assert.ok(firstDestructiveStatement > placeMetadataAbort);
+  assert.ok(firstDestructiveStatement > savedPlaceMetadataAbort);
+  assert.ok(firstDestructiveStatement > conflictAbort);
   assert.ok(merge >= 0);
   assert.ok(repoint > merge);
   assert.ok(removeDuplicates > repoint);
