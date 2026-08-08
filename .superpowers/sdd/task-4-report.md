@@ -430,3 +430,62 @@ tags, images, and a sole Post retain the existing lossless merge behavior.
   not executed. Static migration assertions, Prisma schema diffs, full tests,
   and production build are green.
 - Build retains the existing local default-`BETTER_AUTH_SECRET` warning.
+
+## Saved Place Timestamp Preservation - 2026-08-08
+
+### Status
+
+Duplicate UserSavedPlace merges now preserve the earliest `createdAt` and
+latest `updatedAt` across every merged row, independent of which saved-place
+row is selected as survivor.
+
+### RED
+
+- `npx tsx --test src/lib/places.test.ts`: exit 1; 21 tests, 20 passed,
+  1 failed. The migration regression failed on missing
+  `"createdAt" = metadata."createdAt"`, proving survivor timestamps were not
+  merged.
+
+### GREEN
+
+- Focused migration test:
+  `npx tsx --test src/lib/places.test.ts`: exit 0; 21 passed, 0 failed.
+- `npm test`: exit 0; 57 passed, 0 failed.
+- Focused lint:
+  `npx eslint "src/lib/places.test.ts"`: exit 0, no output.
+- Static timestamp scan confirmed:
+  `CREATED_AGGREGATE_PRESENT=True`,
+  `UPDATED_AGGREGATE_PRESENT=True`,
+  `CREATED_ASSIGNMENT_BEFORE_DELETE=True`, and
+  `UPDATED_ASSIGNMENT_BEFORE_DELETE=True`.
+- `npx prisma validate`: exit 0; schema valid.
+- Baseline static check:
+  `npx prisma migrate diff --from-empty --to-schema <schema from commit 3473690> --script`:
+  exit 0; `BASELINE_DIFF_MATCH`.
+- Current schema static check:
+  `npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script`:
+  exit 0; `CURRENT_EMPTY_DIFF_VALID`, SHA-256
+  `49E1B626D5DD43660EF409506D7D5E9A4BEE7502BBF377D07EAEC1FFBD202E17`.
+- `npm run build` with `GOOGLE_MAPS_API_KEY` and
+  `BLOB_READ_WRITE_TOKEN` explicitly unset: exit 0; all 21 static pages
+  generated.
+
+### Migration
+
+- `_manual_saved_place_metadata` computes
+  `min(saved_place."createdAt")` and `max(saved_place."updatedAt")`.
+- The survivor UserSavedPlace receives both values in the same metadata update
+  as rating, review, sourcePostId, and tags.
+- Timestamp assignments occur before duplicate UserSavedPlace deletion.
+
+### Files
+
+- `prisma/migrations/20260808010000_backfill_place_dedupe_key/migration.sql`
+- `src/lib/places.test.ts`
+- `.superpowers/sdd/task-4-report.md`
+
+### Concerns
+
+- No PostgreSQL server or shadow database is available, so data-path SQL remains
+  statically verified rather than executed.
+- Build retains the existing local default-`BETTER_AUTH_SECRET` warning.

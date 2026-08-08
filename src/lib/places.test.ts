@@ -323,6 +323,10 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   const firstUpdate = sql.indexOf('\nUPDATE "');
   const firstDelete = sql.indexOf('\nDELETE FROM "');
   const firstDestructiveStatement = Math.min(firstUpdate, firstDelete);
+  const savedPlaceTimestampUpdate = sql.indexOf(
+    '"createdAt" = metadata."createdAt"',
+  );
+  const savedPlaceDelete = sql.indexOf('DELETE FROM "UserSavedPlace"');
   const begin = sql.indexOf("BEGIN;");
   const commit = sql.lastIndexOf("COMMIT;");
 
@@ -339,9 +343,13 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   assert.match(sql, /"review"\s*=\s*metadata\."review"/);
   assert.match(sql, /"sourcePostId"\s*=\s*metadata\."sourcePostId"/);
   assert.match(sql, /"tags"\s*=\s*metadata\."tags"/);
+  assert.match(sql, /"createdAt"\s*=\s*metadata\."createdAt"/);
+  assert.match(sql, /"updatedAt"\s*=\s*metadata\."updatedAt"/);
   assert.match(sql, /array_agg\(\s*"rating"/);
   assert.match(sql, /array_agg\(\s*"review"/);
   assert.match(sql, /array_agg\(\s*"sourcePostId"/);
+  assert.match(sql, /min\(saved_place\."createdAt"\) AS "createdAt"/);
+  assert.match(sql, /max\(saved_place\."updatedAt"\) AS "updatedAt"/);
   assert.match(sql, /SELECT DISTINCT tag/);
   assert.match(sql, /RAISE EXCEPTION[\s\S]*conflicting_post_ids/);
   for (const field of [
@@ -392,6 +400,8 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   assert.ok(firstDestructiveStatement > placeMetadataAbort);
   assert.ok(firstDestructiveStatement > savedPlaceMetadataAbort);
   assert.ok(firstDestructiveStatement > conflictAbort);
+  assert.ok(savedPlaceTimestampUpdate > 0);
+  assert.ok(savedPlaceDelete > savedPlaceTimestampUpdate);
   assert.ok(merge >= 0);
   assert.ok(repoint > merge);
   assert.ok(removeDuplicates > repoint);

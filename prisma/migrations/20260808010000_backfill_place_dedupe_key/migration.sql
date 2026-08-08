@@ -213,6 +213,8 @@ $$;
 CREATE TEMP TABLE "_manual_saved_place_metadata" ON COMMIT DROP AS
 SELECT
   saved_group.survivor_saved_place_id,
+  min(saved_place."createdAt") AS "createdAt",
+  max(saved_place."updatedAt") AS "updatedAt",
   (
     array_agg(
       "rating"
@@ -259,6 +261,8 @@ WHERE survivor."id" = metadata.survivor_place_id;
 
 UPDATE "UserSavedPlace" survivor
 SET
+  "createdAt" = metadata."createdAt",
+  "updatedAt" = metadata."updatedAt",
   "rating" = metadata."rating",
   "review" = metadata."review",
   "sourcePostId" = metadata."sourcePostId",
