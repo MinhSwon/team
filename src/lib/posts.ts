@@ -7,7 +7,10 @@ import type {
 } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
-import { assertCanViewPost } from "@/lib/friendships";
+import {
+  assertCanViewPost,
+  type PostVisibilityStore,
+} from "@/lib/friendships";
 import {
   parsePlaceInput,
   resolvePlace,
@@ -81,6 +84,12 @@ export type FeedPost = Post & {
     comments: number;
     reshares: number;
   };
+  comments: {
+    id: string;
+    body: string;
+    createdAt: Date;
+    author: AuthorSummary;
+  }[];
   likedByCurrentUser: boolean;
   savedByCurrentUser: boolean;
 };
@@ -107,7 +116,7 @@ export type SavedPlaceCard = UserSavedPlace & {
   post: { id: string } | null;
 };
 
-export interface PostWriteStore {
+export interface PostWriteStore extends PostVisibilityStore {
   createSavedPlace(input: NewSavedPlace): Promise<UserSavedPlace>;
   createPost(input: NewPost): Promise<Post>;
   findSavedPlaceById(id: string): Promise<UserSavedPlace | null>;
@@ -142,7 +151,11 @@ export interface PostsPersistence {
 export type PostDependencies = {
   persistence?: PostsPersistence;
   resolvePlace?: (input: PlaceInput) => Promise<Place>;
-  assertCanViewPost?: (userId: string, postId: string) => Promise<Post>;
+  assertCanViewPost?: (
+    userId: string,
+    postId: string,
+    store?: PostVisibilityStore,
+  ) => Promise<Post>;
 };
 
 export class PostError extends Error {
@@ -377,6 +390,18 @@ function postInclude(userId: string) {
       select: { userId: true },
       take: 1,
     },
+    // ponytail: feed embeds latest 3 comments; add paginated loading when threads need full history.
+    comments: {
+      where: { deletedAt: null },
+      select: {
+        id: true,
+        body: true,
+        createdAt: true,
+        author: { select: authorSelect },
+      },
+      orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
+      take: 3,
+    },
   } satisfies Prisma.PostInclude;
 }
 
@@ -388,6 +413,7 @@ function feedPost(row: PrismaFeedPost): FeedPost {
   const {
     _count,
     likes,
+    comments,
     savedPlace: savedPlaceRow,
     ...post
   } = row;
@@ -405,6 +431,7 @@ function feedPost(row: PrismaFeedPost): FeedPost {
       comments: _count.comments,
       reshares: _count.reshares,
     },
+    comments: comments.reverse(),
     likedByCurrentUser: likes.length > 0,
     savedByCurrentUser: savedBy.length > 0,
   };
@@ -413,10 +440,13 @@ function feedPost(row: PrismaFeedPost): FeedPost {
 function prismaStore(
   client: Pick<
     Prisma.TransactionClient,
-    "userSavedPlace" | "post" | "savedPlaceImage"
+    "friendship" | "userSavedPlace" | "post" | "savedPlaceImage"
   >,
 ): PostWriteStore {
   return {
+    findPost: (id) => client.post.findUnique({ where: { id } }),
+    findFriendshipByPairKey: (pairKey) =>
+      client.friendship.findUnique({ where: { pairKey } }),
     createSavedPlace: ({ images: savedImages, ...data }) =>
       client.userSavedPlace.create({
         data: {
@@ -604,24 +634,24 @@ export async function saveAndSharePlace(
     input.place,
   );
 
-  if (input.sourcePostId) {
-    const sourcePost = await (
-      dependencies.assertCanViewPost ?? assertCanViewPost
-    )(userId, input.sourcePostId);
-    const sourceSave = await persistence.findSavedPlaceById(
-      sourcePost.savedPlaceId,
-    );
-    if (!sourceSave || sourceSave.placeId !== canonicalPlace.id) {
-      throw new PostError(
-        "Source post does not match this place",
-        "INVALID_INPUT",
-        400,
-      );
-    }
-  }
-
   try {
     return await persistence.transaction(async (store) => {
+      if (input.sourcePostId) {
+        const sourcePost = await (
+          dependencies.assertCanViewPost ?? assertCanViewPost
+        )(userId, input.sourcePostId, store);
+        const sourceSave = await store.findSavedPlaceById(
+          sourcePost.savedPlaceId,
+        );
+        if (!sourceSave || sourceSave.placeId !== canonicalPlace.id) {
+          throw new PostError(
+            "Source post does not match this place",
+            "INVALID_INPUT",
+            400,
+          );
+        }
+      }
+
       const savedPlace = await store.createSavedPlace({
         userId,
         placeId: canonicalPlace.id,

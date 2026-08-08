@@ -12,6 +12,11 @@ import type {
 } from "@prisma/client";
 
 import {
+  assertCanViewPost,
+  FriendshipError,
+  type PostVisibilityStore,
+} from "./friendships";
+import {
   PostError,
   deleteSavedPlace,
   getFeed,
@@ -95,6 +100,7 @@ class FakePostsPersistence implements PostsPersistence {
   users = new Map<string, User>();
   places = new Map<string, Place>();
   failPost = false;
+  removeFriendshipOnNextTransaction = false;
   private nextSavedPlaceId = 1;
   private nextPostId = 1;
   private nextImageId = 1;
@@ -139,6 +145,10 @@ class FakePostsPersistence implements PostsPersistence {
   async transaction<T>(
     operation: (store: PostWriteStore) => Promise<T>,
   ): Promise<T> {
+    if (this.removeFriendshipOnNextTransaction) {
+      this.removeFriendshipOnNextTransaction = false;
+      this.removeFriendship("user-a", "user-b");
+    }
     const base = structuredClone(this.state);
     const pending = structuredClone(this.state);
     const store = this.store(pending);
@@ -169,6 +179,16 @@ class FakePostsPersistence implements PostsPersistence {
 
   private store(state: State): PostWriteStore {
     return {
+      findPost: async (id) =>
+        structuredClone(
+          state.posts.find((post) => post.id === id) ?? null,
+        ),
+      findFriendshipByPairKey: async (pairKey) =>
+        structuredClone(
+          this.friendships.find(
+            (friendship) => friendship.pairKey === pairKey,
+          ) ?? null,
+        ),
       createSavedPlace: async (input: NewSavedPlace) => {
         if (
           state.savedPlaces.some(
@@ -437,6 +457,7 @@ class FakePostsPersistence implements PostsPersistence {
       },
       sourcePost: null,
       counts: { likes: 0, comments: 0, reshares: 0 },
+      comments: [],
       likedByCurrentUser: false,
       savedByCurrentUser: this.state.savedPlaces.some(
         (item) =>
@@ -569,6 +590,43 @@ test("reshare keeps authorized source post attribution", async () => {
 
   assert.equal(result.savedPlace.sourcePostId, "source-post");
   assert.equal(result.post.sourcePostId, "source-post");
+});
+
+test("reshare rechecks friendship inside the save transaction", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.seedPost("user-b", "source-post", createdAt, "place-1");
+  persistence.addFriendship("user-a", "user-b", "ACCEPTED");
+  persistence.removeFriendshipOnNextTransaction = true;
+
+  await assert.rejects(
+    saveAndSharePlace(
+      "user-a",
+      { ...saveInput, sourcePostId: "source-post" },
+      dependencies(persistence, place(), {
+        assertCanViewPost: (
+          userId: string,
+          postId: string,
+          store?: PostVisibilityStore,
+        ) => assertCanViewPost(userId, postId, store),
+      }),
+    ),
+    (error: unknown) =>
+      error instanceof FriendshipError &&
+      error.code === "FORBIDDEN" &&
+      error.status === 403,
+  );
+
+  assert.equal(
+    persistence.state.savedPlaces.filter(
+      (savedPlace) => savedPlace.userId === "user-a",
+    ).length,
+    0,
+  );
+  assert.equal(
+    persistence.state.posts.filter((post) => post.authorId === "user-a")
+      .length,
+    0,
+  );
 });
 
 test("saved-place update edits content without creating another post", async () => {

@@ -52,6 +52,16 @@ export interface FriendshipStore {
   findPost(id: string): Promise<Post | null>;
 }
 
+export type FriendshipLookup = Pick<
+  FriendshipStore,
+  "findFriendshipByPairKey"
+>;
+
+export type PostVisibilityStore = Pick<
+  FriendshipStore,
+  "findFriendshipByPairKey" | "findPost"
+>;
+
 export interface FriendshipPersistence extends FriendshipStore {
   transaction<T>(
     operation: (store: FriendshipStore) => Promise<T>,
@@ -310,7 +320,7 @@ export async function removeFriendship(
 export async function areFriends(
   a: string,
   b: string,
-  persistence: FriendshipPersistence = defaultPersistence,
+  persistence: FriendshipLookup = defaultPersistence,
 ): Promise<boolean> {
   if (a === b) return false;
 
@@ -323,7 +333,7 @@ export async function areFriends(
 export async function canViewUser(
   viewerId: string,
   ownerId: string,
-  persistence: FriendshipPersistence = defaultPersistence,
+  persistence: FriendshipLookup = defaultPersistence,
 ): Promise<boolean> {
   return (
     viewerId === ownerId ||
@@ -334,7 +344,7 @@ export async function canViewUser(
 export async function assertCanViewPost(
   viewerId: string,
   postId: string,
-  persistence: FriendshipPersistence = defaultPersistence,
+  persistence: PostVisibilityStore = defaultPersistence,
 ): Promise<Post> {
   const post = await persistence.findPost(postId);
 
