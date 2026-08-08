@@ -355,17 +355,25 @@ test("participants can remove an accepted friendship", async () => {
   assert.equal(persistence.friendships.length, 0);
 });
 
-test("visibility changes only after acceptance", async () => {
+test("unauthorized post visibility matches missing posts", async () => {
   const persistence = new FakeFriendshipPersistence();
   const post = persistence.addPost("user-b");
-  const request = await requestFriendship("user-a", "user-b", persistence);
 
   assert.equal(await canViewUser("user-a", "user-b", persistence), false);
-  await assert.rejects(
-    assertCanViewPost("user-a", post.id, persistence),
-    (error: unknown) =>
-      error instanceof FriendshipError && error.code === "FORBIDDEN",
-  );
+  const assertNotFound = () =>
+    assert.rejects(
+      assertCanViewPost("user-a", post.id, persistence),
+      (error: unknown) =>
+        error instanceof FriendshipError &&
+        error.code === "NOT_FOUND" &&
+        error.status === 404 &&
+        error.message === "Post not found",
+    );
+
+  await assertNotFound();
+
+  const request = await requestFriendship("user-a", "user-b", persistence);
+  await assertNotFound();
 
   await respondToFriendRequest("user-b", request.id, "accept", persistence);
 
@@ -375,6 +383,9 @@ test("visibility changes only after acceptance", async () => {
     await assertCanViewPost("user-a", post.id, persistence),
     post,
   );
+
+  await removeFriendship("user-a", request.id, persistence);
+  await assertNotFound();
 });
 
 test("request notification failure rolls back friendship creation", async () => {

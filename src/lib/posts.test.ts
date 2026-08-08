@@ -396,11 +396,7 @@ class FakePostsPersistence implements PostsPersistence {
             item.requesterId === post.authorId)),
     );
     if (!friendship) {
-      throw new PostError(
-        "You cannot view this post",
-        "FORBIDDEN",
-        403,
-      );
+      throw new PostError("Post not found", "NOT_FOUND", 404);
     }
   }
 
@@ -665,8 +661,9 @@ test("reshare rechecks friendship inside the save transaction", async () => {
     ),
     (error: unknown) =>
       error instanceof FriendshipError &&
-      error.code === "FORBIDDEN" &&
-      error.status === 403,
+      error.code === "NOT_FOUND" &&
+      error.status === 404 &&
+      error.message === "Post not found",
   );
 
   assert.equal(
@@ -914,7 +911,10 @@ test("post detail allows owner and accepted friends, then excludes removed frien
     await assert.rejects(
       getPostDetail("user-a", postId, persistence),
       (error: unknown) =>
-        error instanceof PostError && error.code === "FORBIDDEN",
+        error instanceof PostError &&
+        error.code === "NOT_FOUND" &&
+        error.status === 404 &&
+        error.message === "Post not found",
       postId,
     );
   }
@@ -929,7 +929,10 @@ test("post detail allows owner and accepted friends, then excludes removed frien
   await assert.rejects(
     getPostDetail("user-a", "friend-post", persistence),
     (error: unknown) =>
-      error instanceof PostError && error.code === "FORBIDDEN",
+      error instanceof PostError &&
+      error.code === "NOT_FOUND" &&
+      error.status === 404 &&
+      error.message === "Post not found",
   );
 });
 

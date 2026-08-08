@@ -352,11 +352,7 @@ export async function assertCanViewPost(
     throw new FriendshipError("Post not found", "NOT_FOUND", 404);
   }
   if (!(await canViewUser(viewerId, post.authorId, persistence))) {
-    throw new FriendshipError(
-      "You cannot view this post",
-      "FORBIDDEN",
-      403,
-    );
+    throw new FriendshipError("Post not found", "NOT_FOUND", 404);
   }
 
   return post;
