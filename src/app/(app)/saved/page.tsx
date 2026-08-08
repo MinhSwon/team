@@ -3,11 +3,11 @@
 import { useState, useEffect } from 'react'
 import Navigation from '@/components/Navigation'
 import PlaceCard, { PlaceCardProps } from '@/components/PlaceCard'
-import { FolderHeart, Heart, CheckCircle2, Bookmark, FolderPlus } from 'lucide-react'
+import { FolderHeart, Heart, CheckCircle2, Bookmark } from 'lucide-react'
 
 export default function SavedPage() {
   const [places, setPlaces] = useState<PlaceCardProps[]>([])
-  const [activeTab, setActiveTab] = useState<'SAVED' | 'WANT_TO_GO' | 'VISITED' | 'COLLECTIONS'>('SAVED')
+  const [activeTab, setActiveTab] = useState<'SAVED' | 'WANT_TO_GO' | 'VISITED'>('SAVED')
 
   useEffect(() => {
     fetch('/api/places')
@@ -40,18 +40,17 @@ export default function SavedPage() {
 
         {/* Navigation Tabs */}
         <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none border-b border-slate-800">
-          {[
+          {([
             { key: 'SAVED', label: 'Tất cả đã lưu', icon: Bookmark },
             { key: 'WANT_TO_GO', label: 'Muốn Đi (Want to Go)', icon: Heart },
             { key: 'VISITED', label: 'Đã ghé thăm (Visited)', icon: CheckCircle2 },
-            { key: 'COLLECTIONS', label: 'Bộ sưu tập (Collections)', icon: FolderPlus },
-          ].map((tab) => {
+          ] as const).map((tab) => {
             const Icon = tab.icon
             const isActive = activeTab === tab.key
             return (
               <button
                 key={tab.key}
-                onClick={() => setActiveTab(tab.key as any)}
+                onClick={() => setActiveTab(tab.key)}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold shrink-0 transition-all ${
                   isActive
                     ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/20 scale-105'
@@ -66,29 +65,11 @@ export default function SavedPage() {
         </div>
 
         {/* Content */}
-        {activeTab !== 'COLLECTIONS' ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredPlaces.map((place) => (
-              <PlaceCard key={place.id} place={place} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredPlaces.map((place) => (
+            <PlaceCard key={place.id} place={place} />
             ))}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {[
-              { name: 'Cafe Chill Cuối Tuần', count: 8, cover: 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=800' },
-              { name: 'Rooftop Hẹn Hò', count: 4, cover: 'https://images.unsplash.com/photo-1572116469696-31de0f17cc34?w=800' },
-              { name: 'Quán Nướng Đi Nhóm Đông', count: 6, cover: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=800' },
-            ].map((col, idx) => (
-              <div key={idx} className="group relative h-48 rounded-3xl overflow-hidden border border-slate-800 shadow-xl cursor-pointer">
-                <img src={col.cover} alt={col.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent p-5 flex flex-col justify-end">
-                  <h3 className="text-lg font-bold text-white group-hover:text-amber-400 transition-colors">{col.name}</h3>
-                  <span className="text-xs text-amber-300 font-semibold">{col.count} địa điểm</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        </div>
       </main>
     </div>
   )

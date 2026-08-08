@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import type { User } from "@prisma/client";
+import ts from "typescript";
 
 import { protectAppRoute } from "./layout";
 
@@ -61,4 +62,45 @@ test("auth pages remain outside the protected route group", () => {
     existsSync(new URL("./register/page.tsx", import.meta.url)),
     false,
   );
+});
+
+test("every active navigation route uses the protected route group", () => {
+  const navigationUrl = new URL("../../components/Navigation.tsx", import.meta.url);
+  const sourceFile = ts.createSourceFile(
+    navigationUrl.pathname,
+    readFileSync(navigationUrl, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const hrefs: string[] = [];
+
+  function visit(node: ts.Node) {
+    if (
+      ts.isPropertyAssignment(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "href" &&
+      ts.isStringLiteral(node.initializer)
+    ) {
+      hrefs.push(node.initializer.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  assert.ok(hrefs.length > 0);
+
+  for (const href of hrefs) {
+    const route = href.replace(/^\//, "");
+    assert.equal(
+      existsSync(new URL(`./${route}/page.tsx`, import.meta.url)),
+      true,
+      `${href} must have a page under src/app/(app)`,
+    );
+    assert.equal(
+      existsSync(new URL(`../${route}/page.tsx`, import.meta.url)),
+      false,
+      `${href} must not bypass the protected route group`,
+    );
+  }
 });

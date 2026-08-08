@@ -412,3 +412,152 @@ Modified:
    11 warnings.
 2. Production deployment must set `BETTER_AUTH_URL`; Better Auth warns during
    local production build when that environment variable is absent.
+
+## Second Review Fix Round
+
+### Route Boundary RED
+
+Extended `src/app/(app)/layout.test.ts` to parse active Navigation hrefs with
+the installed TypeScript compiler API and require each page to live under the
+protected `(app)` route group.
+
+Command:
+
+```powershell
+node --import tsx --test 'src/app/(app)/layout.test.ts'
+```
+
+Result:
+
+```text
+tests 4
+pass 3
+fail 1
+AssertionError [ERR_ASSERTION]: /add must have a page under src/app/(app)
+```
+
+Failure was expected: only `/feed` existed under the protected route group.
+
+### Route Boundary GREEN
+
+Native-moved `src/app/saved/page.tsx` to
+`src/app/(app)/saved/page.tsx`, removed Collections from Saved, and added
+minimal protected pages for the other active Navigation hrefs.
+
+Command:
+
+```powershell
+node --import tsx --test 'src/app/(app)/layout.test.ts'
+```
+
+Result:
+
+```text
+tests 4
+pass 4
+fail 0
+```
+
+The focused boundary test now proves:
+
+- Protected layout logic invokes server identity.
+- Anonymous users redirect to `/login`.
+- `/login` and `/register` remain outside `(app)`.
+- Every href declared in Navigation has a page under `(app)` and no page at
+  the unprotected root route level.
+
+### Final Verification
+
+Tests:
+
+```powershell
+npm test
+```
+
+```text
+tests 12
+pass 12
+fail 0
+```
+
+Focused lint:
+
+```powershell
+npx eslint 'src/app/(app)/layout.test.ts' 'src/app/(app)/saved/page.tsx' 'src/app/(app)/add/page.tsx' 'src/app/(app)/friends/page.tsx' 'src/app/(app)/notifications/page.tsx' 'src/app/(app)/profile/page.tsx'
+```
+
+Result: exit 0, no errors or warnings.
+
+Build:
+
+```powershell
+npm run build
+```
+
+Result:
+
+```text
+Compiled successfully in 3.8s
+Generating static pages using 15 workers (17/17)
+BUILD_EXIT=0
+├ ƒ /add
+├ ƒ /feed
+├ ƒ /friends
+├ ○ /login
+├ ƒ /notifications
+├ ƒ /profile
+├ ○ /register
+└ ƒ /saved
+```
+
+React Doctor:
+
+```powershell
+npx react-doctor@latest --verbose --scope changed
+```
+
+```text
+Score: 100 / 100
+No issues found
+```
+
+`git diff --check` passed. Full lint was not rerun in this fix round; focused
+Task 2 lint is green, while previously documented Task 7 legacy lint failures
+remain outside this change.
+
+### Second Review Fix Files
+
+Moved and modified:
+
+- `src/app/saved/page.tsx` to `src/app/(app)/saved/page.tsx`
+
+Created:
+
+- `src/app/(app)/add/page.tsx`
+- `src/app/(app)/friends/page.tsx`
+- `src/app/(app)/notifications/page.tsx`
+- `src/app/(app)/profile/page.tsx`
+
+Modified:
+
+- `src/app/(app)/layout.test.ts`
+- `.superpowers/sdd/task-2-report.md`
+
+### Second Review Self-Review
+
+- Saved URL remains `/saved` and now passes through the server-protected
+  `(app)` layout.
+- Collections tab, state, icon, content, and mock collection data are absent
+  from active Saved.
+- Navigation remains free of excluded legacy routes.
+- Every active Navigation href has a real protected page caller.
+- Public auth pages remain under `(auth)`.
+- No legacy route modules were deleted.
+- No unrelated user-owned files were staged or changed.
+
+### Second Review Concerns
+
+1. Production deployment must set `BETTER_AUTH_URL`; local production build
+   remains successful but logs Better Auth base URL warnings when unset.
+2. `/add`, `/friends`, `/notifications`, and `/profile` are minimal protected
+   route callers pending their feature tasks.
