@@ -1,8 +1,5 @@
 import type { Metadata } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
-import { redirect } from "next/navigation";
-
-import { getCurrentUser } from "@/lib/current-user";
 
 import "./globals.css";
 
@@ -16,16 +13,6 @@ export const metadata: Metadata = {
   description:
     "Nền tảng giúp cá nhân và nhóm bạn khám phá, lưu trữ, chia sẻ và quyết định địa điểm ăn uống, giải trí lý tưởng.",
 };
-
-export async function AuthenticatedAppShell({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  if (!(await getCurrentUser())) redirect("/login");
-
-  return children;
-}
 
 export default function RootLayout({
   children,

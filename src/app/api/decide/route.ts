@@ -16,37 +16,30 @@ export async function POST(request: Request) {
     }))
 
     try {
-      const dbPlaces = await prisma.place.findMany({
-        include: {
-          category: true,
-          subcategory: true,
-          images: true,
-          groupSaved: true,
-          userSaved: true,
-        },
-      })
+      const dbPlaces = await prisma.place.findMany()
 
       if (dbPlaces.length > 0) {
-        candidatePlaces = dbPlaces.map((p: any) => ({
+        // ponytail: neutral legacy defaults; Task 7 removes this route.
+        candidatePlaces = dbPlaces.map((p) => ({
           id: p.id,
           name: p.name,
           address: p.address,
           area: p.area || 'TP. Hồ Chí Minh',
-          latitude: p.latitude,
-          longitude: p.longitude,
-          categoryName: p.category?.name || 'Cafe',
-          subcategoryName: p.subcategory?.name || undefined,
-          priceRange: p.priceRange || '100–300k',
-          rating: p.rating,
-          description: p.description || '',
-          phone: p.phone || '',
+          latitude: p.latitude ?? 0,
+          longitude: p.longitude ?? 0,
+          categoryName: 'Cafe',
+          subcategoryName: undefined,
+          priceRange: '100–300k',
+          rating: 4.5,
+          description: '',
+          phone: '',
           website: p.website || '',
-          images: p.images?.map((i: any) => i.url) || [],
+          images: [],
           tags: [],
           isOpenNow: true,
-          groupWantToGoCount: p.groupSaved?.filter((g: any) => g.status === 'WANT_TO_GO').length || 0,
-          savedByCount: (p.userSaved?.length || 0) + (p.groupSaved?.length || 0),
-          isVisitedByGroup: p.groupSaved?.some((g: any) => g.status === 'VISITED') || false,
+          groupWantToGoCount: 0,
+          savedByCount: 0,
+          isVisitedByGroup: false,
         }))
       }
     } catch {

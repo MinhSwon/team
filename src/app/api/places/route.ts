@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { INITIAL_MOCK_PLACES, MockPlace } from '@/lib/mockData'
+import { normalizePlaceText } from '@/lib/validation'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,37 +12,29 @@ export async function GET(request: Request) {
   const area = searchParams.get('area')
 
   try {
-    const places = await prisma.place.findMany({
-      include: {
-        category: true,
-        subcategory: true,
-        tags: { include: { tag: true } },
-        images: true,
-        groupSaved: true,
-        userSaved: true,
-      },
-    })
+    const places = await prisma.place.findMany()
 
-    let filtered: MockPlace[] = places.map((p: any) => ({
+    // ponytail: neutral legacy defaults; Task 7 removes this route.
+    let filtered: MockPlace[] = places.map((p) => ({
       id: p.id,
       name: p.name,
       address: p.address,
       area: p.area || 'TP. Hồ Chí Minh',
-      latitude: p.latitude,
-      longitude: p.longitude,
-      categoryName: p.category?.name || 'Cafe',
-      subcategoryName: p.subcategory?.name || undefined,
-      priceRange: p.priceRange || '100–300k',
-      rating: p.rating,
-      description: p.description || '',
-      phone: p.phone || '',
+      latitude: p.latitude ?? 0,
+      longitude: p.longitude ?? 0,
+      categoryName: 'Cafe',
+      subcategoryName: undefined,
+      priceRange: '100–300k',
+      rating: 4.5,
+      description: '',
+      phone: '',
       website: p.website || '',
-      images: p.images?.map((i: any) => i.url) || [],
-      tags: p.tags?.map((t: any) => t.tag.name) || [],
+      images: [],
+      tags: [],
       isOpenNow: true,
-      groupWantToGoCount: p.groupSaved?.filter((g: any) => g.status === 'WANT_TO_GO').length || 0,
-      savedByCount: (p.userSaved?.length || 0) + (p.groupSaved?.length || 0),
-      isVisitedByGroup: p.groupSaved?.some((g: any) => g.status === 'VISITED') || false,
+      groupWantToGoCount: 0,
+      savedByCount: 0,
+      isVisitedByGroup: false,
     }))
 
     if (filtered.length === 0) {
@@ -96,16 +89,13 @@ export async function POST(request: Request) {
       const created = await prisma.place.create({
         data: {
           name,
+          normalizedName: normalizePlaceText(name),
           address,
+          normalizedAddress: normalizePlaceText(address),
           area: area || 'Quận 1',
           latitude: 10.7769 + (Math.random() - 0.5) * 0.04,
           longitude: 106.7009 + (Math.random() - 0.5) * 0.04,
-          priceRange: priceRange || '100–300k',
-          description: description || '',
           externalSource: 'USER_GENERATED',
-          images: {
-            create: placeImages.map((url: string) => ({ url })),
-          },
         },
       })
       return NextResponse.json({ success: true, place: created })

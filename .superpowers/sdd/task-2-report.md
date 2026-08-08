@@ -227,3 +227,188 @@ src/app/api/places/route.ts(103,11): 'priceRange' does not exist in PlaceCreateI
    within Task 2 ownership. They receive a client session guard through
    `Navigation`; upcoming active page/layout tasks must wrap server-rendered
    content in `AuthenticatedAppShell` or call `requireCurrentUser`.
+
+## Review Fixes
+
+### Route Protection RED
+
+Added `src/app/(app)/layout.test.ts` before creating the protected layout.
+
+Command:
+
+```powershell
+node --import tsx --test 'src/app/(app)/layout.test.ts'
+```
+
+Result:
+
+```text
+Error: Cannot find module './layout'
+```
+
+Failure was expected because no protected route-group layout existed.
+
+### Route Protection GREEN
+
+Created:
+
+- `src/app/(app)/layout.tsx`
+- `src/app/(app)/feed/page.tsx`
+
+Changed root `/` to redirect to `/feed` and removed the unused shell from the
+global root layout.
+
+Command:
+
+```powershell
+node --import tsx --test 'src/app/(app)/layout.test.ts'
+```
+
+Result:
+
+```text
+tests 3
+pass 3
+fail 0
+```
+
+The focused tests prove:
+
+- Protected layout logic invokes server identity exactly once.
+- Anonymous identity redirects to `/login`.
+- `/login` and `/register` remain in `(auth)`, outside `(app)`.
+
+### Build RED
+
+Initial review build:
+
+```powershell
+npm run build
+```
+
+Result: exit 1 after compilation. TypeScript reported stale legacy Prisma
+relations/columns:
+
+```text
+src/app/api/decide/route.ts: category does not exist in PlaceInclude
+src/app/api/places/route.ts: category does not exist in PlaceInclude
+src/app/api/places/route.ts: priceRange does not exist in PlaceCreateInput
+```
+
+After aligning those retained routes to the current `Place` schema, build
+reported one final mismatch:
+
+```text
+Prisma latitude/longitude are number | null, while legacy MockPlace and
+PlaceRawData require number.
+```
+
+The minimal fix uses `0` only when persisted coordinates are absent.
+
+### Build GREEN
+
+Command:
+
+```powershell
+npm run build
+```
+
+Transport suppressed the final progress lines, so the same command was
+captured through `cmd` and `%ERRORLEVEL%`.
+
+Result:
+
+```text
+BUILD_EXIT=0
+```
+
+Generated route table:
+
+```text
+○ /
+ƒ /api/auth/[...all]
+ƒ /feed
+○ /login
+○ /register
+```
+
+`/feed` is server-rendered on demand through `(app)/layout.tsx`; auth pages
+remain statically public.
+
+### Final Verification
+
+Tests:
+
+```powershell
+npm test
+```
+
+```text
+tests 11
+pass 11
+fail 0
+```
+
+Focused lint:
+
+```powershell
+npx eslint 'src/app/(app)/layout.tsx' 'src/app/(app)/layout.test.ts' 'src/app/(app)/feed/page.tsx' src/app/page.tsx src/app/layout.tsx src/app/api/decide/route.ts src/app/api/places/route.ts
+```
+
+Result: exit 0, no errors or warnings.
+
+React Doctor:
+
+```powershell
+npx react-doctor@latest --verbose --scope changed
+```
+
+```text
+Score: 100 / 100
+No issues found
+```
+
+Full lint:
+
+```powershell
+npm run lint
+```
+
+Result: exit 1 with 16 errors and 11 warnings in retained Task 7 legacy
+modules. No review-fix file appears in the output.
+
+### Review Fix Files
+
+Created:
+
+- `src/app/(app)/layout.tsx`
+- `src/app/(app)/layout.test.ts`
+- `src/app/(app)/feed/page.tsx`
+
+Modified:
+
+- `src/app/page.tsx`
+- `src/app/layout.tsx`
+- `src/app/api/decide/route.ts`
+- `src/app/api/places/route.ts`
+- `.superpowers/sdd/task-2-report.md`
+
+### Review Self-Review
+
+- Global root layout remains public and performs no identity redirect.
+- Root flow enters `/feed`, not `/discover`.
+- Protected `/feed` has a real server-side identity caller.
+- Anonymous protected requests redirect to `/login`.
+- Public auth routes remain outside the protected route group.
+- Discover, decide, groups, and import remain absent from active navigation.
+- Legacy modules remain present for Task 7 deletion.
+- Legacy API compile fixes use current Prisma fields and do not restore removed
+  schema concepts.
+- `git diff --check` passes.
+
+### Review Concerns
+
+1. Full lint remains red only in retained Task 7 legacy modules: 16 errors and
+   11 warnings.
+2. Production deployment must set `BETTER_AUTH_URL`; Better Auth warns during
+   local production build when that environment variable is absent.
