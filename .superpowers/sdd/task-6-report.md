@@ -131,3 +131,110 @@ Modified:
 ## Commit
 
 Commit message: `feat: add social interactions and notifications`
+
+---
+
+## Review Fixes
+
+### Status
+
+Fixed desired-state like replay behavior, active interaction counts, duplicate
+client submissions, and refreshed comment deduplication.
+
+### RED
+
+1. `npx tsx --test src/lib/interactions.test.ts`
+   - Exit 1: 15 tests, 6 passed, 9 failed.
+   - Explicit `liked` arguments were treated as persistence objects, proving
+     the mutation still used toggle semantics.
+   - Like route returned HTTP 500 for the new request shape and invalid
+     desired-state payloads.
+2. `npx tsx --test src/lib/post-card-state.test.ts`
+   - Exit 1: `Cannot find module './post-card-state'`.
+   - Proved exclusive action, authoritative count, and comment merge helpers
+     did not exist.
+3. `npx tsx --test --test-name-pattern "feed and post counts stay aligned" src/lib/posts.test.ts`
+   - Exit 1: 1 test, 0 passed, 1 failed.
+   - Feed returned `{ comments: 0, reshares: 0 }` for one active comment and
+     one active reshare.
+
+### GREEN
+
+1. `npx tsx --test src/lib/interactions.test.ts`
+   - Exit 0: 15 tests, 15 passed.
+2. `npx tsx --test src/lib/post-card-state.test.ts`
+   - Exit 0: 4 tests, 4 passed.
+3. `npx tsx --test --test-name-pattern "feed and post counts stay aligned" src/lib/posts.test.ts`
+   - Exit 0: 1 test, 1 passed.
+
+Coverage now proves replayed and concurrent desired-state likes converge,
+duplicate requests create one notification, absent unlikes stay unchanged,
+invalid like payloads stop at the route, failed client actions release their
+lock without changing prior state, server counts replace local counts, and
+refreshed/local comments merge once by ID.
+
+### Verification
+
+- `npm test`
+  - Exit 0: 99 tests, 99 passed.
+- `npx eslint src/lib/interactions.ts src/lib/interactions.test.ts src/lib/post-card-state.ts src/lib/post-card-state.test.ts src/lib/posts.ts src/lib/posts.test.ts src/components/PostCard.tsx 'src/app/api/posts/[id]/like/route.ts'`
+  - Exit 0: no warnings or errors.
+- `npm run build`
+  - Exit 0: Prisma generation, TypeScript, and Next.js production build
+    completed.
+- `npx react-doctor@latest --verbose --scope changed`
+  - Exit 0: score 76/100, 4 warnings.
+  - Existing warnings remain in `src/app/api/uploads/route.ts:42` and
+    `src/lib/posts.ts:215`.
+  - `src/lib/interactions.ts:300` and `src/lib/interactions.ts:356` report
+    sequential awaits; these intentionally keep visibility authorization
+    before interaction reads or writes.
+- `git diff --check`
+  - Exit 0; line-ending notices only.
+
+### Files
+
+Created:
+
+- `src/lib/post-card-state.ts`
+- `src/lib/post-card-state.test.ts`
+
+Modified:
+
+- `src/app/api/posts/[id]/like/route.ts`
+- `src/components/PostCard.tsx`
+- `src/lib/interactions.ts`
+- `src/lib/interactions.test.ts`
+- `src/lib/posts.ts`
+- `src/lib/posts.test.ts`
+- `.superpowers/sdd/task-6-report.md`
+
+### Self-Review
+
+- Like POST requires `{ liked: boolean }`; mutation always rechecks current
+  visibility inside its transaction.
+- Replayed `true` and `false` requests return stored state and authoritative
+  counts without duplicate writes or notifications.
+- Commit-time unique/delete conflicts recover to the requested state for
+  concurrent identical requests.
+- Feed and detail relation counts filter soft-deleted comments and reshare
+  posts, matching comment and resave mutation counts.
+- `PostCard` sends current desired state, applies counts only from valid server
+  results, suppresses concurrent duplicate actions, and releases every lock in
+  `finally`.
+- Comment rendering merges server props before local comments by ID, so
+  refreshed server records replace duplicate local copies.
+- No notification route or page duplication was added.
+- Unrelated work and untracked SDD files remain untouched.
+
+### Concerns
+
+- No live PostgreSQL service was used. Stateful fakes cover removed
+  friendships, rollback, soft deletion, replay, and concurrent uniqueness
+  behavior; Prisma query syntax passed production build.
+- React Doctor's two interaction warnings conflict with required
+  authorization-before-mutation ordering and were not changed.
+
+### Commit
+
+Commit message: `fix: make social interactions replay-safe`

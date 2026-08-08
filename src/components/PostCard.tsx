@@ -8,8 +8,13 @@ import {
   Star,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useState } from "react";
 
+import {
+  applyServerCount,
+  createExclusiveAction,
+  mergeCommentsById,
+} from "@/lib/post-card-state";
 import type { FeedPost } from "@/lib/posts";
 
 async function responseJson(response: Response) {
@@ -43,111 +48,110 @@ export default function PostCard({ post }: { post: FeedPost }) {
   const [commentPending, setCommentPending] = useState(false);
   const [savePending, setSavePending] = useState(false);
   const [error, setError] = useState("");
-  const likeLock = useRef(false);
-  const commentLock = useRef(false);
-  const saveLock = useRef(false);
+  const [runLike] = useState(createExclusiveAction);
+  const [runComment] = useState(createExclusiveAction);
+  const [runSave] = useState(createExclusiveAction);
   const liked = likedOverride ?? post.likedByCurrentUser;
   const saved = savedOverride ?? post.savedByCurrentUser;
   const counts = { ...post.counts, ...countOverrides };
-  const comments = [...post.comments, ...newComments];
+  const comments = mergeCommentsById(post.comments, newComments);
 
   async function toggleLike() {
-    if (likeLock.current) return;
-    likeLock.current = true;
-    setLikePending(true);
-    setError("");
-    try {
-      const body = await responseJson(
-        await fetch(`/api/posts/${post.id}/like`, { method: "POST" }),
-      );
-      if (
-        typeof body.liked !== "boolean" ||
-        typeof body.count !== "number"
-      ) {
-        throw new Error("Invalid like response");
+    await runLike(async () => {
+      setLikePending(true);
+      setError("");
+      try {
+        const body = await responseJson(
+          await fetch(`/api/posts/${post.id}/like`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ liked: !liked }),
+          }),
+        );
+        if (
+          typeof body.liked !== "boolean" ||
+          typeof body.count !== "number"
+        ) {
+          throw new Error("Invalid like response");
+        }
+        setLiked(body.liked);
+        setCounts((current) =>
+          applyServerCount(current, "likes", body.count as number),
+        );
+      } catch (requestError) {
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Could not update like",
+        );
+      } finally {
+        setLikePending(false);
       }
-      setLiked(body.liked);
-      setCounts((current) => ({ ...current, likes: body.count as number }));
-    } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Could not update like",
-      );
-    } finally {
-      likeLock.current = false;
-      setLikePending(false);
-    }
+    });
   }
 
   async function submitComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (commentLock.current) return;
-    commentLock.current = true;
-    setCommentPending(true);
-    setError("");
-    try {
-      const body = await responseJson(
-        await fetch(`/api/posts/${post.id}/comments`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ body: commentBody }),
-        }),
-      );
-      const comment = body.comment as FeedPost["comments"][number] | undefined;
-      if (!comment || typeof body.count !== "number") {
-        throw new Error("Invalid comment response");
+    await runComment(async () => {
+      setCommentPending(true);
+      setError("");
+      try {
+        const body = await responseJson(
+          await fetch(`/api/posts/${post.id}/comments`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: commentBody }),
+          }),
+        );
+        const comment = body.comment as
+          | FeedPost["comments"][number]
+          | undefined;
+        if (!comment || typeof body.count !== "number") {
+          throw new Error("Invalid comment response");
+        }
+        setComments((current) => mergeCommentsById(current, [comment]));
+        setCounts((current) =>
+          applyServerCount(current, "comments", body.count as number),
+        );
+        setCommentBody("");
+      } catch (requestError) {
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Could not add comment",
+        );
+      } finally {
+        setCommentPending(false);
       }
-      setComments((current) =>
-        post.comments.some((item) => item.id === comment.id) ||
-        current.some((item) => item.id === comment.id)
-          ? current
-          : [...current, comment],
-      );
-      setCounts((current) => ({
-        ...current,
-        comments: body.count as number,
-      }));
-      setCommentBody("");
-    } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Could not add comment",
-      );
-    } finally {
-      commentLock.current = false;
-      setCommentPending(false);
-    }
+    });
   }
 
   async function savePlace() {
-    if (saveLock.current || saved) return;
-    saveLock.current = true;
-    setSavePending(true);
-    setError("");
-    try {
-      const body = await responseJson(
-        await fetch(`/api/posts/${post.id}/save`, { method: "POST" }),
-      );
-      if (body.saved !== true || typeof body.count !== "number") {
-        throw new Error("Invalid save response");
+    if (saved) return;
+    await runSave(async () => {
+      setSavePending(true);
+      setError("");
+      try {
+        const body = await responseJson(
+          await fetch(`/api/posts/${post.id}/save`, { method: "POST" }),
+        );
+        if (body.saved !== true || typeof body.count !== "number") {
+          throw new Error("Invalid save response");
+        }
+        setSaved(true);
+        setCounts((current) =>
+          applyServerCount(current, "reshares", body.count as number),
+        );
+      } catch (requestError) {
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Could not save place",
+        );
+      } finally {
+        setSavePending(false);
       }
-      setSaved(true);
-      setCounts((current) => ({
-        ...current,
-        reshares: body.count as number,
-      }));
-    } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Could not save place",
-      );
-    } finally {
-      saveLock.current = false;
-      setSavePending(false);
-    }
+    });
   }
 
   return (

@@ -291,17 +291,24 @@ const defaultPersistence: InteractionPersistence = {
 export async function togglePostLike(
   userId: string,
   postId: string,
+  liked: boolean,
   persistence: InteractionPersistence = defaultPersistence,
 ): Promise<{ liked: boolean; count: number }> {
   try {
     return await persistence.transaction(async (store) => {
       const post = await visiblePost(userId, postId, store);
       const existing = await store.findLike(postId, userId);
-      if (existing) {
+      if (!liked) {
+        if (!existing) {
+          return { liked: false, count: await store.countLikes(postId) };
+        }
         await store.deleteLike(postId, userId);
         return { liked: false, count: await store.countLikes(postId) };
       }
 
+      if (existing) {
+        return { liked: true, count: await store.countLikes(postId) };
+      }
       await store.createLike(postId, userId);
       if (post.authorId !== userId) {
         await store.createNotification({
@@ -315,7 +322,7 @@ export async function togglePostLike(
       return { liked: true, count: await store.countLikes(postId) };
     });
   } catch (error) {
-    if (hasPrismaCode(error, "P2002")) {
+    if (liked && hasPrismaCode(error, "P2002")) {
       const like = await persistence.findLike(postId, userId);
       if (like) {
         return {
@@ -324,7 +331,7 @@ export async function togglePostLike(
         };
       }
     }
-    if (hasPrismaCode(error, "P2025")) {
+    if (!liked && hasPrismaCode(error, "P2025")) {
       const like = await persistence.findLike(postId, userId);
       if (!like) {
         return {

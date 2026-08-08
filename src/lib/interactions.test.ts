@@ -427,7 +427,7 @@ test("non-friends receive not-found for likes, comments, and resaves", async () 
   persistence.seedPost();
 
   for (const operation of [
-    () => togglePostLike("user-a", "post-1", persistence),
+    () => togglePostLike("user-a", "post-1", true, persistence),
     () =>
       createPostComment("user-a", "post-1", "hello", persistence),
     () =>
@@ -451,7 +451,7 @@ test("visibility is checked inside the like mutation transaction", async () => {
   persistence.removeFriendshipOnNextTransaction = true;
 
   await assert.rejects(
-    togglePostLike("user-a", "post-1", persistence),
+    togglePostLike("user-a", "post-1", true, persistence),
     (error: unknown) =>
       error instanceof InteractionError && error.code === "NOT_FOUND",
   );
@@ -460,11 +460,15 @@ test("visibility is checked inside the like mutation transaction", async () => {
   assert.equal(persistence.state.notifications.length, 0);
 });
 
-test("like toggles one unique record and creates one friend notification", async () => {
+test("like desired state is replay-idempotent", async () => {
   const persistence = interactionPersistence();
 
   assert.deepEqual(
-    await togglePostLike("user-a", "post-1", persistence),
+    await togglePostLike("user-a", "post-1", true, persistence),
+    { liked: true, count: 1 },
+  );
+  assert.deepEqual(
+    await togglePostLike("user-a", "post-1", true, persistence),
     { liked: true, count: 1 },
   );
   assert.equal(persistence.state.likes.length, 1);
@@ -474,7 +478,11 @@ test("like toggles one unique record and creates one friend notification", async
   );
 
   assert.deepEqual(
-    await togglePostLike("user-a", "post-1", persistence),
+    await togglePostLike("user-a", "post-1", false, persistence),
+    { liked: false, count: 0 },
+  );
+  assert.deepEqual(
+    await togglePostLike("user-a", "post-1", false, persistence),
     { liked: false, count: 0 },
   );
   assert.equal(persistence.state.likes.length, 0);
@@ -485,8 +493,8 @@ test("concurrent duplicate likes commit one like and one notification", async ()
   persistence.competeNextTransactions();
 
   const results = await Promise.all([
-    togglePostLike("user-a", "post-1", persistence),
-    togglePostLike("user-a", "post-1", persistence),
+    togglePostLike("user-a", "post-1", true, persistence),
+    togglePostLike("user-a", "post-1", true, persistence),
   ]);
 
   assert.deepEqual(results, [
@@ -499,12 +507,12 @@ test("concurrent duplicate likes commit one like and one notification", async ()
 
 test("concurrent duplicate unlikes settle on one removed like", async () => {
   const persistence = interactionPersistence();
-  await togglePostLike("user-a", "post-1", persistence);
+  await togglePostLike("user-a", "post-1", true, persistence);
   persistence.competeNextTransactions();
 
   const results = await Promise.all([
-    togglePostLike("user-a", "post-1", persistence),
-    togglePostLike("user-a", "post-1", persistence),
+    togglePostLike("user-a", "post-1", false, persistence),
+    togglePostLike("user-a", "post-1", false, persistence),
   ]);
 
   assert.deepEqual(results, [
@@ -549,7 +557,7 @@ test("self likes and comments suppress notifications", async () => {
   const persistence = new FakeInteractionPersistence();
   persistence.seedPost("user-a");
 
-  await togglePostLike("user-a", "post-1", persistence);
+  await togglePostLike("user-a", "post-1", true, persistence);
   await createPostComment("user-a", "post-1", "owner note", persistence);
 
   assert.equal(persistence.state.notifications.length, 0);
@@ -560,7 +568,7 @@ test("notification failure rolls back interaction mutation", async () => {
   persistence.failNotification = true;
 
   await assert.rejects(
-    togglePostLike("user-a", "post-1", persistence),
+    togglePostLike("user-a", "post-1", true, persistence),
     /notification failed/,
   );
   await assert.rejects(
@@ -695,13 +703,21 @@ test("interaction routes derive actor and recipient from server session", async 
   const context = { params: Promise.resolve({ id: "post-1" }) };
   const requireUser = async () => ({ id: "session-user" });
 
-  const likeResponse = await handleLikePost(context, {
-    requireUser,
-    togglePostLike: async (userId, postId) => {
-      seen.push(`like:${userId}:${postId}`);
-      return { liked: true, count: 1 };
+  const likeResponse = await handleLikePost(
+    new Request("http://localhost/api/posts/post-1/like", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ liked: true, userId: "client-user" }),
+    }),
+    context,
+    {
+      requireUser,
+      togglePostLike: async (userId, postId, liked) => {
+        seen.push(`like:${userId}:${postId}:${liked}`);
+        return { liked, count: 1 };
+      },
     },
-  });
+  );
   const commentResponse = await handleCommentPost(
     new Request("http://localhost/api/posts/post-1/comments", {
       method: "POST",
@@ -775,12 +791,36 @@ test("interaction routes derive actor and recipient from server session", async 
     assert.equal(response.status, 200);
   }
   assert.deepEqual(seen, [
-    "like:session-user:post-1",
+    "like:session-user:post-1:true",
     "comment:session-user:post-1:hello",
     "save:session-user:post-1",
     "list:session-user",
     "read:session-user",
   ]);
+});
+
+test("like route rejects missing or non-boolean desired state", async () => {
+  const context = { params: Promise.resolve({ id: "post-1" }) };
+  const dependencies = {
+    requireUser: async () => ({ id: "session-user" }),
+    togglePostLike: async () => {
+      assert.fail("invalid input must not reach mutation");
+    },
+  };
+
+  for (const body of [{}, { liked: "true" }, { liked: null }]) {
+    const response = await handleLikePost(
+      new Request("http://localhost/api/posts/post-1/like", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      context,
+      dependencies,
+    );
+
+    assert.equal(response.status, 400, JSON.stringify(body));
+  }
 });
 
 test("PostCard renders interactive controls and existing inline comments", () => {

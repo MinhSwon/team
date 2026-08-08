@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import type {
+  Comment,
   Friendship,
   Place,
   Post,
@@ -92,10 +93,11 @@ type State = {
   savedPlaces: UserSavedPlace[];
   posts: Post[];
   images: SavedPlaceImage[];
+  comments: Comment[];
 };
 
 class FakePostsPersistence implements PostsPersistence {
-  state: State = { savedPlaces: [], posts: [], images: [] };
+  state: State = { savedPlaces: [], posts: [], images: [], comments: [] };
   friendships: Friendship[] = [];
   users = new Map<string, User>();
   places = new Map<string, Place>();
@@ -126,6 +128,25 @@ class FakePostsPersistence implements PostsPersistence {
       createdAt,
       updatedAt: createdAt,
     });
+  }
+
+  addComment(
+    postId: string,
+    id: string,
+    deletedAt: Date | null = null,
+  ) {
+    this.state.comments.push({
+      id,
+      postId,
+      authorId: "user-a",
+      body: id,
+      createdAt,
+      updatedAt: createdAt,
+      deletedAt,
+    });
+    return this.state.comments.filter(
+      (comment) => comment.postId === postId && !comment.deletedAt,
+    ).length;
   }
 
   removeFriendship(a: string, b: string) {
@@ -436,6 +457,15 @@ class FakePostsPersistence implements PostsPersistence {
     assert.ok(canonicalPlace);
     const author = this.users.get(post.authorId);
     assert.ok(author);
+    const comments = this.state.comments
+      .filter((comment) => comment.postId === post.id && !comment.deletedAt)
+      .sort(
+        (a, b) =>
+          b.createdAt.getTime() - a.createdAt.getTime() ||
+          b.id.localeCompare(a.id),
+      )
+      .slice(0, 3)
+      .reverse();
 
     return {
       ...structuredClone(post),
@@ -456,8 +486,31 @@ class FakePostsPersistence implements PostsPersistence {
         ),
       },
       sourcePost: null,
-      counts: { likes: 0, comments: 0, reshares: 0 },
-      comments: [],
+      counts: {
+        likes: 0,
+        comments: this.state.comments.filter(
+          (comment) => comment.postId === post.id && !comment.deletedAt,
+        ).length,
+        reshares: this.state.posts.filter(
+          (candidate) =>
+            candidate.sourcePostId === post.id && !candidate.deletedAt,
+        ).length,
+      },
+      comments: comments.map((comment) => {
+        const commentAuthor = this.users.get(comment.authorId);
+        assert.ok(commentAuthor);
+        return {
+          id: comment.id,
+          body: comment.body,
+          createdAt: comment.createdAt,
+          author: {
+            id: commentAuthor.id,
+            name: commentAuthor.name,
+            username: commentAuthor.username,
+            image: commentAuthor.image,
+          },
+        };
+      }),
       likedByCurrentUser: false,
       savedByCurrentUser: this.state.savedPlaces.some(
         (item) =>
@@ -745,6 +798,79 @@ test("feed cursor is stable for equal timestamps", async () => {
   assert.equal(second.nextCursor, null);
 });
 
+test("feed and post counts stay aligned after comment mutation", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.seedPost("user-b", "source-post", createdAt);
+  persistence.addUser("user-a");
+  persistence.addFriendship("user-a", "user-b", "ACCEPTED");
+  persistence.seedPost("user-a", "active-reshare", createdAt);
+  persistence.seedPost("user-a", "deleted-reshare", createdAt);
+  const activeReshare = persistence.state.posts.find(
+    (post) => post.id === "active-reshare",
+  );
+  const deletedReshare = persistence.state.posts.find(
+    (post) => post.id === "deleted-reshare",
+  );
+  assert.ok(activeReshare);
+  assert.ok(deletedReshare);
+  activeReshare.sourcePostId = "source-post";
+  deletedReshare.sourcePostId = "source-post";
+  deletedReshare.deletedAt = createdAt;
+
+  assert.equal(persistence.addComment("source-post", "comment-1"), 1);
+  assert.equal(
+    persistence.addComment("source-post", "comment-deleted", createdAt),
+    1,
+  );
+
+  const initialFeed = await getFeed(
+    "user-a",
+    undefined,
+    undefined,
+    persistence,
+  );
+  const initialPost = initialFeed.items.find(
+    (post) => post.id === "source-post",
+  );
+  assert.deepEqual(initialPost?.counts, {
+    likes: 0,
+    comments: 1,
+    reshares: 1,
+  });
+  assert.deepEqual(
+    initialPost?.comments.map((comment) => comment.id),
+    ["comment-1"],
+  );
+
+  const mutationCount = persistence.addComment(
+    "source-post",
+    "comment-2",
+  );
+  const refreshedFeed = await getFeed(
+    "user-a",
+    undefined,
+    undefined,
+    persistence,
+  );
+  const refreshedPost = await getPostDetail(
+    "user-a",
+    "source-post",
+    persistence,
+  );
+
+  assert.equal(mutationCount, 2);
+  assert.equal(
+    refreshedFeed.items.find((post) => post.id === "source-post")?.counts
+      .comments,
+    mutationCount,
+  );
+  assert.deepEqual(refreshedPost.counts, {
+    likes: 0,
+    comments: mutationCount,
+    reshares: 1,
+  });
+});
+
 test("place detail includes only current user and accepted-friend reviews", async () => {
   const persistence = new FakePostsPersistence();
   persistence.seedPost("user-a", "self", createdAt, "shared-place");
@@ -844,6 +970,7 @@ test("delete saved place by author cascades post and images", async () => {
     savedPlaces: [],
     posts: [],
     images: [],
+    comments: [],
   });
 });
 

@@ -381,8 +381,8 @@ function postInclude(userId: string) {
     _count: {
       select: {
         likes: true,
-        comments: true,
-        reshares: true,
+        comments: { where: { deletedAt: null } },
+        reshares: { where: { deletedAt: null } },
       },
     },
     likes: {
