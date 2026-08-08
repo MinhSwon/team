@@ -22,7 +22,7 @@ export async function GET(request: Request) {
       },
     })
 
-    let filtered: MockPlace[] = places.map((p) => ({
+    let filtered: MockPlace[] = places.map((p: any) => ({
       id: p.id,
       name: p.name,
       address: p.address,
@@ -36,12 +36,12 @@ export async function GET(request: Request) {
       description: p.description || '',
       phone: p.phone || '',
       website: p.website || '',
-      images: p.images.map((i: { url: string }) => i.url),
-      tags: p.tags.map((t: { tag: { name: string } }) => t.tag.name),
+      images: p.images?.map((i: any) => i.url) || [],
+      tags: p.tags?.map((t: any) => t.tag.name) || [],
       isOpenNow: true,
-      groupWantToGoCount: p.groupSaved.filter((g: { status: string }) => g.status === 'WANT_TO_GO').length,
-      savedByCount: p.userSaved.length + p.groupSaved.length,
-      isVisitedByGroup: p.groupSaved.some((g: { status: string }) => g.status === 'VISITED'),
+      groupWantToGoCount: p.groupSaved?.filter((g: any) => g.status === 'WANT_TO_GO').length || 0,
+      savedByCount: (p.userSaved?.length || 0) + (p.groupSaved?.length || 0),
+      isVisitedByGroup: p.groupSaved?.some((g: any) => g.status === 'VISITED') || false,
     }))
 
     if (filtered.length === 0) {

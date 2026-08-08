@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       })
 
       if (dbPlaces.length > 0) {
-        candidatePlaces = dbPlaces.map((p) => ({
+        candidatePlaces = dbPlaces.map((p: any) => ({
           id: p.id,
           name: p.name,
           address: p.address,
@@ -41,12 +41,12 @@ export async function POST(request: Request) {
           description: p.description || '',
           phone: p.phone || '',
           website: p.website || '',
-          images: p.images.map((i: { url: string }) => i.url),
+          images: p.images?.map((i: any) => i.url) || [],
           tags: [],
           isOpenNow: true,
-          groupWantToGoCount: p.groupSaved.filter((g: { status: string }) => g.status === 'WANT_TO_GO').length,
-          savedByCount: p.userSaved.length + p.groupSaved.length,
-          isVisitedByGroup: p.groupSaved.some((g: { status: string }) => g.status === 'VISITED'),
+          groupWantToGoCount: p.groupSaved?.filter((g: any) => g.status === 'WANT_TO_GO').length || 0,
+          savedByCount: (p.userSaved?.length || 0) + (p.groupSaved?.length || 0),
+          isVisitedByGroup: p.groupSaved?.some((g: any) => g.status === 'VISITED') || false,
         }))
       }
     } catch {
