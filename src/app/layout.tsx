@@ -9,9 +9,9 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "PlaceDecide — Social Place Discovery & Group Decision Platform",
+  title: "PlaceDecide | Private Social Place Network",
   description:
-    "Nền tảng giúp cá nhân và nhóm bạn khám phá, lưu trữ, chia sẻ và quyết định địa điểm ăn uống, giải trí lý tưởng.",
+    "Save places and share them privately with accepted friends.",
 };
 
 export default function RootLayout({
@@ -21,7 +21,7 @@ export default function RootLayout({
 }) {
   return (
     <html
-      lang="vi"
+      lang="en"
       className={`${plusJakarta.className} h-full bg-slate-950 text-slate-100 antialiased`}
     >
       <body className="flex min-h-full flex-col bg-slate-950">{children}</body>

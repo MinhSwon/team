@@ -112,3 +112,14 @@ test("protected add route renders the unified add-place flow", () => {
   assert.match(source, /AddPlaceModal/);
   assert.equal(existsSync(new URL("../add/page.tsx", import.meta.url)), false);
 });
+
+test("mobile navigation keeps five stable product actions", () => {
+  const source = readFileSync(
+    new URL("../../components/Navigation.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /const mobileNavItems = navItems\.slice\(0, 5\)/);
+  assert.match(source, /grid-cols-5/);
+  assert.doesNotMatch(source, /grid-cols-6/);
+});

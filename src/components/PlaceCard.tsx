@@ -1,28 +1,6 @@
 import { Bookmark, MapPin, Star } from "lucide-react";
 import Link from "next/link";
 
-export type PlaceCardProps = {
-  id: string;
-  name: string;
-  address: string;
-  area: string;
-  latitude: number;
-  longitude: number;
-  categoryName: string;
-  subcategoryName?: string;
-  priceRange: string;
-  rating: number;
-  description?: string;
-  images: string[];
-  tags: string[];
-  isOpenNow: boolean;
-  groupWantToGoCount: number;
-  savedByCount: number;
-  isVisitedByGroup?: boolean;
-  addedBy?: string;
-  addedNote?: string;
-};
-
 type SavedPlaceCardProps = {
   id: string;
   name: string;
@@ -37,24 +15,19 @@ type SavedPlaceCardProps = {
 export default function PlaceCard({
   place,
 }: {
-  place: PlaceCardProps | SavedPlaceCardProps;
+  place: SavedPlaceCardProps;
 }) {
-  const imageUrl =
-    "imageUrl" in place ? place.imageUrl : place.images[0] ?? null;
-  const review =
-    "review" in place ? place.review : place.description ?? null;
-
   return (
     <Link
       className="group block overflow-hidden rounded-md border border-slate-800 bg-slate-900 hover:border-amber-400/60"
       href={`/places/${place.id}`}
     >
-      {imageUrl ? (
+      {place.imageUrl ? (
         <div
           aria-label={place.name}
           className="aspect-[16/9] bg-cover bg-center"
           role="img"
-          style={{ backgroundImage: `url("${imageUrl}")` }}
+          style={{ backgroundImage: `url("${place.imageUrl}")` }}
         />
       ) : (
         <div className="grid aspect-[16/9] place-items-center bg-slate-800 text-slate-500">
@@ -83,9 +56,9 @@ export default function PlaceCard({
           </p>
         )}
 
-        {review && (
+        {place.review && (
           <p className="line-clamp-3 text-sm text-slate-300">
-            {review}
+            {place.review}
           </p>
         )}
 

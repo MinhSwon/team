@@ -7,6 +7,7 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -57,20 +58,35 @@ function Initials({ person }: { person: Person }) {
 function PersonRow({
   item,
   action,
+  profileHref,
 }: {
   item: FriendshipItem;
   action?: ReactNode;
+  profileHref?: string;
 }) {
   return (
     <li className="flex min-h-16 items-center gap-3 border-t border-slate-800 py-3 first:border-t-0">
       <Initials person={item.user} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-white">
-          {item.user.name}
-        </p>
-        <p className="truncate text-xs text-slate-400">
-          @{item.user.username}
-        </p>
+        {profileHref ? (
+          <Link className="group block" href={profileHref}>
+            <span className="block truncate text-sm font-semibold text-white group-hover:text-amber-400">
+              {item.user.name}
+            </span>
+            <span className="block truncate text-xs text-slate-400">
+              @{item.user.username}
+            </span>
+          </Link>
+        ) : (
+          <>
+            <p className="truncate text-sm font-semibold text-white">
+              {item.user.name}
+            </p>
+            <p className="truncate text-xs text-slate-400">
+              @{item.user.username}
+            </p>
+          </>
+        )}
       </div>
       {action}
     </li>
@@ -335,6 +351,7 @@ export default function FriendsClient({
                 <PersonRow
                   key={item.id}
                   item={item}
+                  profileHref={`/profile/${item.user.username}`}
                   action={
                     <button
                       aria-label={`Remove ${item.user.name}`}

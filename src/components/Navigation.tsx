@@ -10,7 +10,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
-import { redirect, usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 import { authClient } from "@/lib/auth-client";
 
@@ -22,17 +22,11 @@ const navItems = [
   { label: "Notifications", href: "/notifications", icon: Bell },
   { label: "Profile", href: "/profile", icon: CircleUser },
 ];
+const mobileNavItems = navItems.slice(0, 5);
 
-export default function Navigation({
-  onOpenAddPlace,
-}: {
-  onOpenAddPlace?: () => void;
-}) {
+export default function Navigation() {
   const pathname = usePathname();
   const router = useRouter();
-  const { data: session, isPending } = authClient.useSession();
-
-  if (!isPending && !session) redirect("/login");
 
   async function signOut() {
     await authClient.signOut();
@@ -43,7 +37,7 @@ export default function Navigation({
   return (
     <>
       <header className="sticky top-0 z-40 border-b border-slate-800 bg-slate-900/95 text-white backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
           <Link href="/feed" className="text-lg font-bold text-amber-400">
             PlaceDecide
           </Link>
@@ -54,24 +48,13 @@ export default function Navigation({
           >
             {navItems.map((item) => {
               const Icon = item.icon;
-              const active = pathname === item.href;
-
-              if (item.href === "/add" && onOpenAddPlace) {
-                return (
-                  <button
-                    key={item.href}
-                    className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800 hover:text-white"
-                    onClick={onOpenAddPlace}
-                    type="button"
-                  >
-                    <Icon className="h-4 w-4" />
-                    {item.label}
-                  </button>
-                );
-              }
+              const active =
+                pathname === item.href ||
+                pathname.startsWith(`${item.href}/`);
 
               return (
                 <Link
+                  aria-current={active ? "page" : undefined}
                   key={item.href}
                   href={item.href}
                   className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold ${
@@ -87,50 +70,55 @@ export default function Navigation({
             })}
           </nav>
 
-          <button
-            aria-label="Sign out"
-            className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white"
-            onClick={signOut}
-            title="Sign out"
-            type="button"
-          >
-            <LogOut className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <Link
+              aria-label="Profile"
+              className="grid h-11 w-11 place-items-center rounded-md text-slate-300 hover:bg-slate-800 hover:text-white md:hidden"
+              href="/profile"
+              title="Profile"
+            >
+              <CircleUser className="h-5 w-5" />
+            </Link>
+            <button
+              aria-label="Sign out"
+              className="grid h-11 w-11 place-items-center rounded-md text-slate-300 hover:bg-slate-800 hover:text-white"
+              onClick={signOut}
+              title="Sign out"
+              type="button"
+            >
+              <LogOut className="h-5 w-5" />
+            </button>
+          </div>
         </div>
       </header>
 
       <nav
         aria-label="Mobile navigation"
-        className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-6 border-t border-slate-800 bg-slate-900/95 px-1 py-2 backdrop-blur md:hidden"
+        className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-800 bg-slate-900/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
       >
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const active = pathname === item.href;
-          const className = `flex min-w-0 flex-col items-center gap-1 px-1 py-1 text-[10px] font-medium ${
-            active ? "text-amber-400" : "text-slate-400"
-          }`;
+        <div className="grid h-16 grid-cols-5 px-1">
+          {mobileNavItems.map((item) => {
+            const Icon = item.icon;
+            const active =
+              pathname === item.href ||
+              pathname.startsWith(`${item.href}/`);
+            const className = `flex h-16 min-w-0 flex-col items-center justify-center gap-1 px-0.5 text-center text-[10px] leading-3 font-medium ${
+              active ? "text-amber-400" : "text-slate-400"
+            }`;
 
-          if (item.href === "/add" && onOpenAddPlace) {
             return (
-              <button
+              <Link
+                aria-current={active ? "page" : undefined}
                 key={item.href}
+                href={item.href}
                 className={className}
-                onClick={onOpenAddPlace}
-                type="button"
               >
-                <Icon className="h-5 w-5" />
-                <span className="truncate">{item.label}</span>
-              </button>
+                <Icon className="h-5 w-5 shrink-0" />
+                <span className="max-w-full break-words">{item.label}</span>
+              </Link>
             );
-          }
-
-          return (
-            <Link key={item.href} href={item.href} className={className}>
-              <Icon className="h-5 w-5" />
-              <span className="truncate">{item.label}</span>
-            </Link>
-          );
-        })}
+          })}
+        </div>
       </nav>
     </>
   );

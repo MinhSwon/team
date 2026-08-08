@@ -892,5 +892,6 @@ test("PostCard renders interactive controls and existing inline comments", () =>
   assert.match(markup, /aria-label="Like"/);
   assert.match(markup, /aria-label="Add comment"/);
   assert.match(markup, /aria-label="Save place"/);
+  assert.match(markup, /href="\/profile\/user-b"/);
   assert.match(markup, /Worth the trip/);
 });

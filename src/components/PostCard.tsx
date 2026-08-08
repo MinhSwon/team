@@ -157,7 +157,10 @@ export default function PostCard({ post }: { post: FeedPost }) {
   return (
     <article className="overflow-hidden rounded-md border border-slate-800 bg-slate-900">
       <header className="flex items-center justify-between gap-4 border-b border-slate-800 px-4 py-3">
-        <div className="min-w-0">
+        <Link
+          className="min-w-0 hover:text-amber-400"
+          href={`/profile/${post.author.username}`}
+        >
           <p className="truncate font-semibold text-white">
             {post.author.name}
           </p>
@@ -167,7 +170,7 @@ export default function PostCard({ post }: { post: FeedPost }) {
               {post.createdAt.toISOString().slice(0, 16).replace("T", " ")} UTC
             </time>
           </p>
-        </div>
+        </Link>
         {post.sourcePost && (
           <p className="shrink-0 text-xs text-slate-400">
             via @{post.sourcePost.author.username}
