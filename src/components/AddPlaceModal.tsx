@@ -12,6 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 
@@ -22,7 +23,7 @@ import {
 } from "@/lib/validation";
 
 type Method = "search" | "mapsUrl" | "manual";
-type Busy = "search" | "resolve" | "upload" | null;
+type Busy = "search" | "resolve" | "upload" | "save" | null;
 type ConfirmedPlace = { id?: string; name: string; address: string };
 type UploadedImage = { name: string; url: string };
 type AddPlaceModalProps = {
@@ -180,6 +181,7 @@ function EntryPanel({
               <input
                 className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500 focus:border-amber-400"
                 id="place-search"
+                maxLength={PLACE_LIMITS.query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Name or address"
                 type="search"
@@ -291,6 +293,7 @@ function EntryPanel({
               <input
                 className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none focus:border-amber-400"
                 id="manual-name"
+                maxLength={PLACE_LIMITS.name}
                 onChange={(event) => setManualName(event.target.value)}
                 required
                 value={manualName}
@@ -306,6 +309,7 @@ function EntryPanel({
               <input
                 className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none focus:border-amber-400"
                 id="manual-address"
+                maxLength={PLACE_LIMITS.address}
                 onChange={(event) => setManualAddress(event.target.value)}
                 required
                 value={manualAddress}
@@ -351,10 +355,13 @@ function ResolveButton({
 function ConfirmationForm({
   initialPlace,
   onReset,
+  onSuccess,
 }: {
   initialPlace: ConfirmedPlace;
   onReset: () => void;
+  onSuccess?: () => void;
 }) {
+  const router = useRouter();
   const [place, setPlace] = useState(initialPlace);
   const [rating, setRating] = useState<number | null>(null);
   const [review, setReview] = useState("");
@@ -362,6 +369,7 @@ function ConfirmationForm({
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
   const [uploadError, setUploadError] = useState("");
+  const [saveError, setSaveError] = useState("");
 
   async function uploadImages(event: ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
@@ -397,11 +405,60 @@ function ConfirmationForm({
     setBusy(null);
   }
 
+  async function savePlace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy("save");
+    setSaveError("");
+
+    try {
+      const placeInput: PlaceInput = place.id
+        ? {
+            type: "search",
+            candidate: {
+              source: "local",
+              id: place.id,
+              name: place.name,
+              address: place.address,
+              area: null,
+              latitude: null,
+              longitude: null,
+              website: null,
+            },
+          }
+        : {
+            type: "manual",
+            name: place.name,
+            address: place.address,
+          };
+      const result = await api<{
+        savedPlace: { placeId: string };
+        post: { id: string };
+      }>("/api/saved", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          place: placeInput,
+          rating,
+          review,
+          tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+          images: images.map((image) => ({
+            url: image.url,
+            caption: null,
+          })),
+        }),
+      });
+
+      onSuccess?.();
+      router.push(`/places/${result.savedPlace.placeId}`);
+      router.refresh();
+    } catch (error) {
+      setSaveError(errorMessage(error));
+      setBusy(null);
+    }
+  }
+
   return (
-    <form
-      className="space-y-6 py-7"
-      onSubmit={(event) => event.preventDefault()}
-    >
+    <form className="space-y-6 py-7" onSubmit={savePlace}>
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-lg font-bold text-white">Confirm details</h2>
         <button
@@ -425,6 +482,7 @@ function ConfirmationForm({
           <input
             className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none focus:border-amber-400"
             id="confirmed-name"
+            maxLength={PLACE_LIMITS.name}
             onChange={(event) =>
               setPlace((current) => ({
                 ...current,
@@ -445,6 +503,7 @@ function ConfirmationForm({
           <input
             className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none focus:border-amber-400"
             id="confirmed-address"
+            maxLength={PLACE_LIMITS.address}
             onChange={(event) =>
               setPlace((current) => ({
                 ...current,
@@ -578,16 +637,23 @@ function ConfirmationForm({
 
       <div className="border-t border-slate-800 pt-5">
         <button
-          className="min-h-11 w-full rounded-md bg-slate-800 px-4 text-sm font-bold text-slate-500"
-          disabled
-          title="Save endpoint arrives in Task 5"
+          className="flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-amber-400 px-4 text-sm font-bold text-slate-950 hover:bg-amber-300 disabled:opacity-50"
+          disabled={busy !== null}
           type="submit"
         >
+          {busy === "save" && (
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          )}
           Save and share
         </button>
-        <p className="mt-2 text-center text-xs text-slate-500">
-          Save endpoint arrives in Task 5.
-        </p>
+        {saveError && (
+          <p
+            aria-live="polite"
+            className="mt-2 text-center text-sm text-rose-400"
+          >
+            {saveError}
+          </p>
+        )}
       </div>
     </form>
   );
@@ -596,6 +662,7 @@ function ConfirmationForm({
 export default function AddPlaceModal({
   isOpen = true,
   onClose,
+  onSuccess,
 }: AddPlaceModalProps) {
   const [confirmation, setConfirmation] = useState<ConfirmedPlace | null>(
     null,
@@ -644,6 +711,7 @@ export default function AddPlaceModal({
           <ConfirmationForm
             initialPlace={confirmation}
             onReset={() => setConfirmation(null)}
+            onSuccess={onSuccess}
           />
         ) : (
           <EntryPanel onConfirmed={setConfirmation} />
