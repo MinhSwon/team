@@ -7,16 +7,32 @@ import {
   PlaceResolutionError,
   resolvePlace,
 } from "@/lib/places";
+import {
+  enforceRateLimit,
+  RateLimitError,
+  rateLimitResponse,
+} from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
-    await requireCurrentUser();
-    const place = await resolvePlace(parsePlaceInput(await request.json()));
+    const currentUser = await requireCurrentUser();
+    await enforceRateLimit(request, currentUser.id, "placeSearch");
+    const input = parsePlaceInput(await request.json());
+    if (input.type === "manual") {
+      return Response.json({
+        place: {
+          name: input.name.trim(),
+          address: input.address.trim(),
+        },
+      });
+    }
+    const place = await resolvePlace(input, { viewerId: currentUser.id });
     return Response.json({ place });
   } catch (error) {
     if (error instanceof UnauthorizedError) {
       return Response.json({ error: error.message }, { status: 401 });
     }
+    if (error instanceof RateLimitError) return rateLimitResponse(error);
     if (
       error instanceof PlaceResolutionError &&
       error.code === "MANUAL_CONFIRMATION_REQUIRED"

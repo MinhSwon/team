@@ -3,6 +3,7 @@ import type {
   Post,
   Prisma,
   SavedPlaceImage,
+  SavedPlaceStatus,
   UserSavedPlace,
 } from "@prisma/client";
 
@@ -23,7 +24,7 @@ import {
 } from "@/lib/validation";
 
 export type SavedImageInput = {
-  url: string;
+  uploadId: string;
   caption: string | null;
 };
 
@@ -34,6 +35,7 @@ export type SavePlaceInput = {
   tags: string[];
   images: SavedImageInput[];
   sourcePostId: string | null;
+  status: SavedPlaceStatus;
 };
 
 export type NewSavedPlace = Omit<SavePlaceInput, "place"> & {
@@ -48,7 +50,7 @@ export type NewPost = {
 };
 
 export type SavedPlaceUpdate = Partial<
-  Pick<SavePlaceInput, "rating" | "review" | "tags" | "images">
+  Pick<SavePlaceInput, "rating" | "review" | "tags" | "images" | "status">
 >;
 
 export type FeedCursor = {
@@ -116,15 +118,24 @@ export type SavedPlaceCard = UserSavedPlace & {
   post: { id: string } | null;
 };
 
+export type OwnedSavedPlace = UserSavedPlace & {
+  images: Pick<SavedPlaceImage, "blobUploadId">[];
+};
+
 export interface PostWriteStore extends PostVisibilityStore {
   createSavedPlace(input: NewSavedPlace): Promise<UserSavedPlace>;
   createPost(input: NewPost): Promise<Post>;
   findSavedPlaceById(id: string): Promise<UserSavedPlace | null>;
+  findOwnedSavedPlace(
+    id: string,
+    userId: string,
+  ): Promise<OwnedSavedPlace | null>;
   updateSavedPlace(
     id: string,
+    userId: string,
     input: SavedPlaceUpdate,
   ): Promise<UserSavedPlace>;
-  deleteSavedPlace(id: string): Promise<void>;
+  deleteSavedPlace(id: string, userId: string): Promise<void>;
 }
 
 export interface PostsPersistence {
@@ -135,7 +146,6 @@ export interface PostsPersistence {
     userId: string,
     placeId: string,
   ): Promise<{ savedPlace: UserSavedPlace; post: Post } | null>;
-  findSavedPlaceById(id: string): Promise<UserSavedPlace | null>;
   findFeedPosts(query: FeedQuery): Promise<FeedPost[]>;
   findPostDetail(
     userId: string,
@@ -163,9 +173,7 @@ export class PostError extends Error {
     public readonly code:
       | "INVALID_INPUT"
       | "INVALID_CURSOR"
-      | "NOT_FOUND"
-      | "FORBIDDEN"
-      | "IMAGE_UPLOADS_NOT_CONFIGURED",
+      | "NOT_FOUND",
     public readonly status: number,
   ) {
     super(message);
@@ -211,35 +219,30 @@ function tags(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((tag) => typeof tag !== "string")) {
     throw new PostError("Tags must be text", "INVALID_INPUT", 400);
   }
-  return [...new Set(value.map((tag) => tag.trim()).filter(Boolean))];
-}
-
-function configuredBlobHost(): string {
-  const host = process.env.BLOB_PUBLIC_HOST?.trim().toLowerCase();
-  if (!host) {
+  if (value.length > 10) {
+    throw new PostError("Tags are limited to 10", "INVALID_INPUT", 400);
+  }
+  const normalized: string[] = [];
+  for (const tag of value) {
+    const trimmed = tag.trim();
+    if (trimmed) normalized.push(trimmed);
+  }
+  if (normalized.some((tag) => tag.length > 32)) {
     throw new PostError(
-      "Image uploads are not configured",
-      "IMAGE_UPLOADS_NOT_CONFIGURED",
-      503,
+      "Each tag must be 32 characters or fewer",
+      "INVALID_INPUT",
+      400,
     );
   }
-  try {
-    if (new URL(`https://${host}`).hostname !== host) throw new Error();
-  } catch {
-    throw new PostError(
-      "Image uploads are not configured",
-      "IMAGE_UPLOADS_NOT_CONFIGURED",
-      503,
-    );
-  }
-  return host;
+  return [...new Set(normalized)];
 }
 
-function image(value: unknown, trustedHost: string): SavedImageInput {
-  const item =
-    typeof value === "string" ? { url: value, caption: null } : record(value);
+function image(value: unknown): SavedImageInput {
+  const item = record(value);
   if (
-    typeof item.url !== "string" ||
+    typeof item.uploadId !== "string" ||
+    !item.uploadId.trim() ||
+    item.uploadId.trim().length > 128 ||
     (item.caption !== null &&
       item.caption !== undefined &&
       typeof item.caption !== "string")
@@ -247,28 +250,8 @@ function image(value: unknown, trustedHost: string): SavedImageInput {
     throw new PostError("Invalid saved image", "INVALID_INPUT", 400);
   }
 
-  let url: URL;
-  try {
-    url = new URL(item.url);
-  } catch {
-    throw new PostError("Invalid saved image URL", "INVALID_INPUT", 400);
-  }
-  const imagePath = /\.(?:jpe?g|png|webp)$/i.test(url.pathname);
-  if (
-    url.protocol !== "https:" ||
-    url.hostname !== trustedHost ||
-    !imagePath ||
-    url.username ||
-    url.password ||
-    url.port ||
-    url.search ||
-    url.hash
-  ) {
-    throw new PostError("Invalid saved image URL", "INVALID_INPUT", 400);
-  }
-
   return {
-    url: url.toString(),
+    uploadId: item.uploadId.trim(),
     caption:
       typeof item.caption === "string" ? item.caption.trim() || null : null,
   };
@@ -279,9 +262,26 @@ function images(value: unknown): SavedImageInput[] {
   if (!Array.isArray(value)) {
     throw new PostError("Images must be a list", "INVALID_INPUT", 400);
   }
-  if (value.length === 0) return [];
-  const trustedHost = configuredBlobHost();
-  return value.map((value) => image(value, trustedHost));
+  if (value.length > 6) {
+    throw new PostError("Images are limited to 6", "INVALID_INPUT", 400);
+  }
+  const parsed = value.map(image);
+  if (new Set(parsed.map(({ uploadId }) => uploadId)).size !== parsed.length) {
+    throw new PostError("Image uploads must be unique", "INVALID_INPUT", 400);
+  }
+  return parsed;
+}
+
+function savedStatus(value: unknown): SavedPlaceStatus {
+  if (value === undefined) return "SAVED";
+  if (
+    value !== "SAVED" &&
+    value !== "WANT_TO_GO" &&
+    value !== "VISITED"
+  ) {
+    throw new PostError("Invalid saved place status", "INVALID_INPUT", 400);
+  }
+  return value;
 }
 
 function sourcePostId(value: unknown): string | null {
@@ -301,6 +301,7 @@ export function parseSavePlaceInput(value: unknown): SavePlaceInput {
     tags: tags(input.tags),
     images: images(input.images),
     sourcePostId: sourcePostId(input.sourcePostId),
+    status: savedStatus(input.status),
   };
 }
 
@@ -314,6 +315,7 @@ export function parseSavedPlaceUpdate(value: unknown): SavedPlaceUpdate {
   }
   if (Object.hasOwn(input, "tags")) update.tags = tags(input.tags);
   if (Object.hasOwn(input, "images")) update.images = images(input.images);
+  if (Object.hasOwn(input, "status")) update.status = savedStatus(input.status);
 
   return update;
 }
@@ -439,42 +441,137 @@ function feedPost(row: PrismaFeedPost): FeedPost {
 function prismaStore(
   client: Pick<
     Prisma.TransactionClient,
-    "friendship" | "userSavedPlace" | "post" | "savedPlaceImage"
+    | "blobUpload"
+    | "friendship"
+    | "userSavedPlace"
+    | "post"
+    | "savedPlaceImage"
   >,
 ): PostWriteStore {
+  async function claimImages(
+    userId: string,
+    savedImages: SavedImageInput[],
+  ) {
+    if (savedImages.length === 0) return [];
+    const uploadIds = savedImages.map(({ uploadId }) => uploadId);
+    const claimed = await client.blobUpload.updateMany({
+      where: {
+        id: { in: uploadIds },
+        ownerId: userId,
+        lifecycle: "UPLOADED",
+      },
+      data: { lifecycle: "CLAIMED" },
+    });
+    if (claimed.count !== uploadIds.length) {
+      throw new PostError("Invalid image upload", "INVALID_INPUT", 400);
+    }
+    const uploads = await client.blobUpload.findMany({
+      where: {
+        id: { in: uploadIds },
+        ownerId: userId,
+        lifecycle: "CLAIMED",
+      },
+      select: { id: true, url: true },
+    });
+    const byId = new Map(uploads.map((upload) => [upload.id, upload]));
+    return savedImages.map((image) => {
+      const upload = byId.get(image.uploadId);
+      if (!upload) {
+        throw new PostError("Invalid image upload", "INVALID_INPUT", 400);
+      }
+      return {
+        blobUploadId: upload.id,
+        url: upload.url,
+        caption: image.caption,
+      };
+    });
+  }
+
+  async function markImagesPendingDelete(savedPlaceId: string) {
+    const images = await client.savedPlaceImage.findMany({
+      where: { savedPlaceId, blobUploadId: { not: null } },
+      select: { blobUploadId: true },
+    });
+    const uploadIds = images.flatMap(({ blobUploadId }) =>
+      blobUploadId ? [blobUploadId] : [],
+    );
+    if (uploadIds.length > 0) {
+      await client.blobUpload.updateMany({
+        where: { id: { in: uploadIds }, lifecycle: "CLAIMED" },
+        data: { lifecycle: "PENDING_DELETE" },
+      });
+    }
+  }
+
   return {
-    findPost: (id) => client.post.findUnique({ where: { id } }),
-    findFriendshipByPairKey: (pairKey) =>
-      client.friendship.findUnique({ where: { pairKey } }),
-    createSavedPlace: ({ images: savedImages, ...data }) =>
-      client.userSavedPlace.create({
+    findVisiblePost: (viewerId, id) =>
+      client.post.findFirst({
+        where: {
+          id,
+          deletedAt: null,
+          OR: [
+            { authorId: viewerId },
+            {
+              author: {
+                requestsSent: {
+                  some: { addresseeId: viewerId, status: "ACCEPTED" },
+                },
+              },
+            },
+            {
+              author: {
+                requestsIn: {
+                  some: { requesterId: viewerId, status: "ACCEPTED" },
+                },
+              },
+            },
+          ],
+        },
+      }),
+    createSavedPlace: async ({ images: savedImages, ...data }) => {
+      const claimedImages = await claimImages(data.userId, savedImages);
+      return client.userSavedPlace.create({
         data: {
           ...data,
           images: {
-            create: savedImages.map((savedImage, sortOrder) => ({
-              ...savedImage,
+            create: claimedImages.map((savedImage, sortOrder) => ({
+              url: savedImage.url,
+              caption: savedImage.caption,
               sortOrder,
+              blobUpload: { connect: { id: savedImage.blobUploadId } },
             })),
           },
         },
-      }),
+      });
+    },
     createPost: (data) => client.post.create({ data }),
     findSavedPlaceById: (id) =>
       client.userSavedPlace.findUnique({ where: { id } }),
-    updateSavedPlace: async (id, input) => {
+    findOwnedSavedPlace: (id, userId) =>
+      client.userSavedPlace.findUnique({
+        where: { id, userId },
+        include: {
+          images: { select: { blobUploadId: true } },
+        },
+      }),
+    updateSavedPlace: async (id, userId, input) => {
       const { images: savedImages, ...data } = input;
       const savedPlace = await client.userSavedPlace.update({
-        where: { id },
+        where: { id, userId },
         data,
       });
       if (savedImages) {
+        await markImagesPendingDelete(id);
         await client.savedPlaceImage.deleteMany({
           where: { savedPlaceId: id },
         });
-        if (savedImages.length > 0) {
+        const claimedImages = await claimImages(userId, savedImages);
+        if (claimedImages.length > 0) {
           await client.savedPlaceImage.createMany({
-            data: savedImages.map((savedImage, sortOrder) => ({
-              ...savedImage,
+            data: claimedImages.map((savedImage, sortOrder) => ({
+              blobUploadId: savedImage.blobUploadId,
+              url: savedImage.url,
+              caption: savedImage.caption,
               savedPlaceId: id,
               sortOrder,
             })),
@@ -483,8 +580,9 @@ function prismaStore(
       }
       return savedPlace;
     },
-    deleteSavedPlace: async (id) => {
-      await client.userSavedPlace.delete({ where: { id } });
+    deleteSavedPlace: async (id, userId) => {
+      await markImagesPendingDelete(id);
+      await client.userSavedPlace.delete({ where: { id, userId } });
     },
   };
 }
@@ -503,8 +601,6 @@ const defaultPersistence: PostsPersistence = {
     const { post, ...savedPlaceRecord } = savedPlace;
     return { savedPlace: savedPlaceRecord, post };
   },
-  findSavedPlaceById: (id) =>
-    prisma.userSavedPlace.findUnique({ where: { id } }),
   findFeedPosts: async ({ userId, cursor, take }) => {
     const where: Prisma.PostWhereInput = {
       deletedAt: null,
@@ -541,8 +637,45 @@ const defaultPersistence: PostsPersistence = {
     return post ? feedPost(post) : null;
   },
   findPlaceDetail: async (userId, placeId) => {
-    const place = await prisma.place.findUnique({
-      where: { id: placeId },
+    const place = await prisma.place.findFirst({
+      where: {
+        id: placeId,
+        OR: [
+          {
+            externalSource: { not: null },
+            externalPlaceId: { not: null },
+          },
+          {
+            savedBy: {
+              some: {
+                OR: [
+                  { userId },
+                  {
+                    user: {
+                      requestsSent: {
+                        some: {
+                          addresseeId: userId,
+                          status: "ACCEPTED",
+                        },
+                      },
+                    },
+                  },
+                  {
+                    user: {
+                      requestsIn: {
+                        some: {
+                          requesterId: userId,
+                          status: "ACCEPTED",
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
       include: {
         savedBy: {
           where: {
@@ -626,9 +759,14 @@ export async function saveAndSharePlace(
 ): Promise<{ savedPlace: UserSavedPlace; post: Post }> {
   const input = parseSavePlaceInput(value);
   const persistence = dependencies.persistence ?? defaultPersistence;
-  const canonicalPlace = await (dependencies.resolvePlace ?? resolvePlace)(
-    input.place,
+  const canonicalPlace = dependencies.resolvePlace
+    ? await dependencies.resolvePlace(input.place)
+    : await resolvePlace(input.place, { viewerId: userId });
+  const existingBeforeWrite = await persistence.findSavedPlaceWithPost(
+    userId,
+    canonicalPlace.id,
   );
+  if (existingBeforeWrite) return existingBeforeWrite;
 
   try {
     return await persistence.transaction(async (store) => {
@@ -656,6 +794,7 @@ export async function saveAndSharePlace(
         tags: input.tags,
         images: input.images,
         sourcePostId: input.sourcePostId,
+        status: input.status,
       });
       const post = await store.createPost({
         authorId: userId,
@@ -665,7 +804,13 @@ export async function saveAndSharePlace(
       return { savedPlace, post };
     });
   } catch (error) {
-    if (hasPrismaCode(error, "P2002")) {
+    if (
+      hasPrismaCode(error, "P2002") ||
+      hasPrismaCode(error, "P2034") ||
+      (error instanceof PostError &&
+        error.code === "INVALID_INPUT" &&
+        input.images.length > 0)
+    ) {
       const existing = await persistence.findSavedPlaceWithPost(
         userId,
         canonicalPlace.id,
@@ -684,18 +829,18 @@ export async function updateSavedPlace(
 ): Promise<UserSavedPlace> {
   const input = parseSavedPlaceUpdate(value);
   return persistence.transaction(async (store) => {
-    const savedPlace = await store.findSavedPlaceById(id);
+    const savedPlace = await store.findOwnedSavedPlace(id, userId);
     if (!savedPlace) {
       throw new PostError("Saved place not found", "NOT_FOUND", 404);
     }
-    if (savedPlace.userId !== userId) {
-      throw new PostError(
-        "You cannot edit this saved place",
-        "FORBIDDEN",
-        403,
-      );
+    try {
+      return await store.updateSavedPlace(id, userId, input);
+    } catch (error) {
+      if (hasPrismaCode(error, "P2025")) {
+        throw new PostError("Saved place not found", "NOT_FOUND", 404);
+      }
+      throw error;
     }
-    return store.updateSavedPlace(id, input);
   });
 }
 
@@ -705,18 +850,18 @@ export async function deleteSavedPlace(
   persistence: PostsPersistence = defaultPersistence,
 ): Promise<void> {
   await persistence.transaction(async (store) => {
-    const savedPlace = await store.findSavedPlaceById(id);
+    const savedPlace = await store.findOwnedSavedPlace(id, userId);
     if (!savedPlace) {
       throw new PostError("Saved place not found", "NOT_FOUND", 404);
     }
-    if (savedPlace.userId !== userId) {
-      throw new PostError(
-        "You cannot delete this saved place",
-        "FORBIDDEN",
-        403,
-      );
+    try {
+      await store.deleteSavedPlace(id, userId);
+    } catch (error) {
+      if (hasPrismaCode(error, "P2025")) {
+        throw new PostError("Saved place not found", "NOT_FOUND", 404);
+      }
+      throw error;
     }
-    await store.deleteSavedPlace(id);
   });
 }
 

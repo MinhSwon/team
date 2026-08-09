@@ -323,9 +323,9 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   const firstUpdate = sql.indexOf('\nUPDATE "');
   const firstDelete = sql.indexOf('\nDELETE FROM "');
   const firstDestructiveStatement = Math.min(firstUpdate, firstDelete);
-  const savedPlaceTimestampUpdate = sql.indexOf(
-    '"createdAt" = metadata."createdAt"',
-  );
+  const survivorSavedPlaceUpdate = sql.match(
+    /UPDATE "UserSavedPlace" survivor[\s\S]*?WHERE survivor\."id" = metadata\.survivor_saved_place_id;/,
+  )?.[0] ?? "";
   const savedPlaceDelete = sql.indexOf('DELETE FROM "UserSavedPlace"');
   const begin = sql.indexOf("BEGIN;");
   const commit = sql.lastIndexOf("COMMIT;");
@@ -343,8 +343,14 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   assert.match(sql, /"review"\s*=\s*metadata\."review"/);
   assert.match(sql, /"sourcePostId"\s*=\s*metadata\."sourcePostId"/);
   assert.match(sql, /"tags"\s*=\s*metadata\."tags"/);
-  assert.match(sql, /"createdAt"\s*=\s*metadata\."createdAt"/);
-  assert.match(sql, /"updatedAt"\s*=\s*metadata\."updatedAt"/);
+  assert.match(
+    survivorSavedPlaceUpdate,
+    /"createdAt"\s*=\s*metadata\."createdAt"/,
+  );
+  assert.match(
+    survivorSavedPlaceUpdate,
+    /"updatedAt"\s*=\s*metadata\."updatedAt"/,
+  );
   assert.match(sql, /array_agg\(\s*"rating"/);
   assert.match(sql, /array_agg\(\s*"review"/);
   assert.match(sql, /array_agg\(\s*"sourcePostId"/);
@@ -400,8 +406,11 @@ test("Place dedupe migration merges legacy duplicates before backfill and unique
   assert.ok(firstDestructiveStatement > placeMetadataAbort);
   assert.ok(firstDestructiveStatement > savedPlaceMetadataAbort);
   assert.ok(firstDestructiveStatement > conflictAbort);
-  assert.ok(savedPlaceTimestampUpdate > 0);
-  assert.ok(savedPlaceDelete > savedPlaceTimestampUpdate);
+  assert.ok(survivorSavedPlaceUpdate.length > 0);
+  assert.ok(
+    savedPlaceDelete >
+      sql.indexOf(survivorSavedPlaceUpdate),
+  );
   assert.ok(merge >= 0);
   assert.ok(repoint > merge);
   assert.ok(removeDuplicates > repoint);

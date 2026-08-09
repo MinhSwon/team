@@ -19,6 +19,10 @@ import {
   saveAndSharePlace,
   type SavePlaceInput,
 } from "@/lib/posts";
+import {
+  MAX_SERIALIZABLE_ATTEMPTS,
+  withSerializableRetry,
+} from "@/lib/serializable";
 
 type ActorSummary = {
   id: string;
@@ -150,6 +154,38 @@ function commentBody(value: unknown): string {
   return body;
 }
 
+async function visiblePostAndLike(
+  userId: string,
+  postId: string,
+  store: InteractionStore,
+) {
+  const post = await visiblePost(userId, postId, store);
+  return {
+    post,
+    existing: await store.findLike(postId, userId),
+  };
+}
+
+async function createVisibleComment(
+  store: InteractionStore,
+  post: Post,
+  userId: string,
+  postId: string,
+  body: string,
+) {
+  const comment = await store.createComment(postId, userId, body);
+  if (post.authorId !== userId) {
+    await store.createNotification({
+      recipientId: post.authorId,
+      actorId: userId,
+      type: "POST_COMMENTED",
+      postId,
+      commentId: comment.id,
+    });
+  }
+  return { comment, count: await store.countComments(postId) };
+}
+
 function prismaStore(
   client: Pick<
     Prisma.TransactionClient,
@@ -157,9 +193,30 @@ function prismaStore(
   >,
 ): InteractionStore {
   return {
-    findPost: (id) => client.post.findUnique({ where: { id } }),
-    findFriendshipByPairKey: (pairKey) =>
-      client.friendship.findUnique({ where: { pairKey } }),
+    findVisiblePost: (viewerId, id) =>
+      client.post.findFirst({
+        where: {
+          id,
+          deletedAt: null,
+          OR: [
+            { authorId: viewerId },
+            {
+              author: {
+                requestsSent: {
+                  some: { addresseeId: viewerId, status: "ACCEPTED" },
+                },
+              },
+            },
+            {
+              author: {
+                requestsIn: {
+                  some: { requesterId: viewerId, status: "ACCEPTED" },
+                },
+              },
+            },
+          ],
+        },
+      }),
     findLike: (postId, userId) =>
       client.postLike.findUnique({
         where: { postId_userId: { postId, userId } },
@@ -238,8 +295,13 @@ function notificationItem(
 
 const defaultPersistence: InteractionPersistence = {
   transaction: (operation) =>
-    prisma.$transaction((transaction) =>
-      operation(prismaStore(transaction)),
+    withSerializableRetry(
+      () =>
+        prisma.$transaction(
+          (transaction) => operation(prismaStore(transaction)),
+          { isolationLevel: "Serializable" },
+        ),
+      MAX_SERIALIZABLE_ATTEMPTS,
     ),
   findLike: (postId, userId) =>
     prisma.postLike.findUnique({
@@ -296,8 +358,11 @@ export async function togglePostLike(
 ): Promise<{ liked: boolean; count: number }> {
   try {
     return await persistence.transaction(async (store) => {
-      const post = await visiblePost(userId, postId, store);
-      const existing = await store.findLike(postId, userId);
+      const { post, existing } = await visiblePostAndLike(
+        userId,
+        postId,
+        store,
+      );
       if (!liked) {
         if (!existing) {
           return { liked: false, count: await store.countLikes(postId) };
@@ -353,17 +418,7 @@ export async function createPostComment(
   const body = commentBody(value);
   return persistence.transaction(async (store) => {
     const post = await visiblePost(userId, postId, store);
-    const comment = await store.createComment(postId, userId, body);
-    if (post.authorId !== userId) {
-      await store.createNotification({
-        recipientId: post.authorId,
-        actorId: userId,
-        type: "POST_COMMENTED",
-        postId,
-        commentId: comment.id,
-      });
-    }
-    return { comment, count: await store.countComments(postId) };
+    return createVisibleComment(store, post, userId, postId, body);
   });
 }
 
@@ -404,6 +459,7 @@ export async function resavePost(
     tags: [],
     images: [],
     sourcePostId: source.post.id,
+    status: "SAVED",
   });
 
   return {
@@ -459,6 +515,13 @@ export async function markNotificationsRead(
       );
     }
     ids = [...new Set(input.ids.map((id) => id.trim()))];
+    if (ids.length > 100) {
+      throw new InteractionError(
+        "Notification read IDs are limited to 100",
+        "INVALID_INPUT",
+        400,
+      );
+    }
   }
 
   if (input.all !== true && (!ids || ids.length === 0)) {

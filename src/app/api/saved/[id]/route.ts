@@ -8,6 +8,12 @@ import {
   updateSavedPlace,
 } from "@/lib/posts";
 
+type SavedMutationDependencies = {
+  requireUser: () => Promise<{ id: string }>;
+  updateSavedPlace: typeof updateSavedPlace;
+  deleteSavedPlace: typeof deleteSavedPlace;
+};
+
 function errorResponse(error: unknown): Response {
   if (error instanceof UnauthorizedError) {
     return Response.json({ error: error.message }, { status: 401 });
@@ -21,14 +27,15 @@ function errorResponse(error: unknown): Response {
   return Response.json({ error: "Saved place request failed" }, { status: 500 });
 }
 
-export async function PATCH(
+export async function handleSavedPatch(
   request: Request,
   context: { params: Promise<{ id: string }> },
+  dependencies: SavedMutationDependencies,
 ) {
   try {
-    const currentUser = await requireCurrentUser();
+    const currentUser = await dependencies.requireUser();
     const { id } = await context.params;
-    const savedPlace = await updateSavedPlace(
+    const savedPlace = await dependencies.updateSavedPlace(
       currentUser.id,
       id,
       await request.json(),
@@ -39,16 +46,37 @@ export async function PATCH(
   }
 }
 
-export async function DELETE(
+export async function handleSavedDelete(
   _request: Request,
   context: { params: Promise<{ id: string }> },
+  dependencies: SavedMutationDependencies,
 ) {
   try {
-    const currentUser = await requireCurrentUser();
+    const currentUser = await dependencies.requireUser();
     const { id } = await context.params;
-    await deleteSavedPlace(currentUser.id, id);
+    await dependencies.deleteSavedPlace(currentUser.id, id);
     return new Response(null, { status: 204 });
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+const dependencies: SavedMutationDependencies = {
+  requireUser: requireCurrentUser,
+  updateSavedPlace,
+  deleteSavedPlace,
+};
+
+export function PATCH(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  return handleSavedPatch(request, context, dependencies);
+}
+
+export function DELETE(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  return handleSavedDelete(request, context, dependencies);
 }

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import type {
+  BlobUpload,
   Comment,
   Friendship,
   Place,
@@ -38,24 +39,6 @@ import {
 } from "./posts";
 
 const createdAt = new Date("2026-08-08T12:00:00.000Z");
-const trustedBlobHost = "store.public.blob.vercel-storage.com";
-process.env.BLOB_PUBLIC_HOST = trustedBlobHost;
-
-function withBlobPublicHost(
-  value: string | undefined,
-  operation: () => void,
-) {
-  const previous = process.env.BLOB_PUBLIC_HOST;
-  if (value === undefined) delete process.env.BLOB_PUBLIC_HOST;
-  else process.env.BLOB_PUBLIC_HOST = value;
-  try {
-    operation();
-  } finally {
-    if (previous === undefined) delete process.env.BLOB_PUBLIC_HOST;
-    else process.env.BLOB_PUBLIC_HOST = previous;
-  }
-}
-
 function user(id: string): User {
   return {
     id,
@@ -90,6 +73,7 @@ function place(id = "place-1"): Place {
 }
 
 type State = {
+  blobs: BlobUpload[];
   savedPlaces: UserSavedPlace[];
   posts: Post[];
   images: SavedPlaceImage[];
@@ -97,7 +81,13 @@ type State = {
 };
 
 class FakePostsPersistence implements PostsPersistence {
-  state: State = { savedPlaces: [], posts: [], images: [], comments: [] };
+  state: State = {
+    blobs: [],
+    savedPlaces: [],
+    posts: [],
+    images: [],
+    comments: [],
+  };
   friendships: Friendship[] = [];
   users = new Map<string, User>();
   places = new Map<string, Place>();
@@ -116,6 +106,22 @@ class FakePostsPersistence implements PostsPersistence {
 
   addPlace(nextPlace: Place) {
     this.places.set(nextPlace.id, nextPlace);
+  }
+
+  addBlob(
+    ownerId: string,
+    id: string,
+    lifecycle: BlobUpload["lifecycle"] = "UPLOADED",
+  ) {
+    this.state.blobs.push({
+      id,
+      ownerId,
+      url: `https://blob.example/${id}.webp`,
+      pathname: `places/${ownerId}/${id}.webp`,
+      lifecycle,
+      createdAt,
+      updatedAt: createdAt,
+    });
   }
 
   addFriendship(a: string, b: string, status: Friendship["status"]) {
@@ -193,23 +199,68 @@ class FakePostsPersistence implements PostsPersistence {
         throw { code: "P2002" };
       }
     }
+    for (const blob of pending.blobs) {
+      const previous = base.blobs.find((item) => item.id === blob.id);
+      const current = this.state.blobs.find((item) => item.id === blob.id);
+      if (
+        previous?.lifecycle === "UPLOADED" &&
+        blob.lifecycle === "CLAIMED" &&
+        current?.lifecycle !== "UPLOADED"
+      ) {
+        throw { code: "P2034" };
+      }
+    }
 
     this.state = pending;
     return result;
   }
 
+  private claimImages(
+    state: State,
+    userId: string,
+    images: NewSavedPlace["images"],
+  ) {
+    return images.map((image) => {
+      const blob = state.blobs.find(
+        (item) =>
+          item.id === image.uploadId &&
+          item.ownerId === userId &&
+          item.lifecycle === "UPLOADED",
+      );
+      if (!blob) {
+        throw new PostError("Invalid image upload", "INVALID_INPUT", 400);
+      }
+      blob.lifecycle = "CLAIMED";
+      return {
+        blobUploadId: blob.id,
+        url: blob.url,
+        caption: image.caption,
+      };
+    });
+  }
+
+  private markImagesPending(state: State, savedPlaceId: string) {
+    for (const image of state.images) {
+      if (image.savedPlaceId !== savedPlaceId || !image.blobUploadId) continue;
+      const blob = state.blobs.find((item) => item.id === image.blobUploadId);
+      if (blob) blob.lifecycle = "PENDING_DELETE";
+    }
+  }
+
   private store(state: State): PostWriteStore {
     return {
-      findPost: async (id) =>
-        structuredClone(
-          state.posts.find((post) => post.id === id) ?? null,
-        ),
-      findFriendshipByPairKey: async (pairKey) =>
-        structuredClone(
-          this.friendships.find(
-            (friendship) => friendship.pairKey === pairKey,
-          ) ?? null,
-        ),
+      findVisiblePost: async (viewerId, id) => {
+        const post = state.posts.find((item) => item.id === id);
+        if (!post || post.deletedAt) return null;
+        if (post.authorId === viewerId) return structuredClone(post);
+        const pairKey = [viewerId, post.authorId].sort().join(":");
+        const friendship = this.friendships.find(
+          (item) => item.pairKey === pairKey,
+        );
+        return friendship?.status === "ACCEPTED"
+          ? structuredClone(post)
+          : null;
+      },
       createSavedPlace: async (input: NewSavedPlace) => {
         if (
           state.savedPlaces.some(
@@ -221,6 +272,11 @@ class FakePostsPersistence implements PostsPersistence {
           throw { code: "P2002" };
         }
 
+        const claimedImages = this.claimImages(
+          state,
+          input.userId,
+          input.images,
+        );
         const savedPlace: UserSavedPlace = {
           id: `saved-${this.nextSavedPlaceId++}`,
           userId: input.userId,
@@ -229,14 +285,16 @@ class FakePostsPersistence implements PostsPersistence {
           review: input.review,
           tags: input.tags,
           sourcePostId: input.sourcePostId,
+          status: input.status,
           createdAt,
           updatedAt: createdAt,
         };
         state.savedPlaces.push(savedPlace);
         state.images.push(
-          ...input.images.map((image, index) => ({
+          ...claimedImages.map((image, index) => ({
             id: `image-${this.nextImageId++}`,
             savedPlaceId: savedPlace.id,
+            blobUploadId: image.blobUploadId,
             url: image.url,
             caption: image.caption,
             sortOrder: index,
@@ -262,8 +320,24 @@ class FakePostsPersistence implements PostsPersistence {
         structuredClone(
           state.savedPlaces.find((item) => item.id === id) ?? null,
         ),
-      updateSavedPlace: async (id, input: SavedPlaceUpdate) => {
-        const index = state.savedPlaces.findIndex((item) => item.id === id);
+      findOwnedSavedPlace: async (id, userId) => {
+        const savedPlace = state.savedPlaces.find(
+          (item) => item.id === id && item.userId === userId,
+        );
+        if (!savedPlace) return null;
+        return {
+          ...structuredClone(savedPlace),
+          images: structuredClone(
+            state.images
+              .filter((image) => image.savedPlaceId === id)
+              .map(({ blobUploadId }) => ({ blobUploadId })),
+          ),
+        };
+      },
+      updateSavedPlace: async (id, userId, input: SavedPlaceUpdate) => {
+        const index = state.savedPlaces.findIndex(
+          (item) => item.id === id && item.userId === userId,
+        );
         if (index < 0) throw { code: "P2025" };
         const current = state.savedPlaces[index];
         const updated = {
@@ -273,13 +347,20 @@ class FakePostsPersistence implements PostsPersistence {
         };
         state.savedPlaces[index] = updated;
         if (input.images) {
+          this.markImagesPending(state, id);
           state.images = state.images.filter(
             (image) => image.savedPlaceId !== id,
           );
+          const claimedImages = this.claimImages(
+            state,
+            userId,
+            input.images,
+          );
           state.images.push(
-            ...input.images.map((image, sortOrder) => ({
+            ...claimedImages.map((image, sortOrder) => ({
               id: `image-${this.nextImageId++}`,
               savedPlaceId: id,
+              blobUploadId: image.blobUploadId,
               url: image.url,
               caption: image.caption,
               sortOrder,
@@ -288,7 +369,15 @@ class FakePostsPersistence implements PostsPersistence {
         }
         return structuredClone(updated);
       },
-      deleteSavedPlace: async (id) => {
+      deleteSavedPlace: async (id, userId) => {
+        if (
+          !state.savedPlaces.some(
+            (item) => item.id === id && item.userId === userId,
+          )
+        ) {
+          throw { code: "P2025" };
+        }
+        this.markImagesPending(state, id);
         state.savedPlaces = state.savedPlaces.filter(
           (item) => item.id !== id,
         );
@@ -421,6 +510,10 @@ class FakePostsPersistence implements PostsPersistence {
         savedPlace.placeId === placeId &&
         visibleUsers.has(savedPlace.userId),
     );
+    const providerBacked =
+      canonicalPlace.externalSource !== null &&
+      canonicalPlace.externalPlaceId !== null;
+    if (!providerBacked && saves.length === 0) return null;
 
     return {
       place: structuredClone(canonicalPlace),
@@ -531,6 +624,7 @@ class FakePostsPersistence implements PostsPersistence {
       review: null,
       tags: [],
       sourcePostId: null,
+      status: "SAVED",
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -575,12 +669,7 @@ const saveInput = {
   rating: 5,
   review: "Excellent coffee.",
   tags: ["coffee", "quiet"],
-  images: [
-    {
-      url: "https://store.public.blob.vercel-storage.com/cafe.webp",
-      caption: null,
-    },
-  ],
+  images: [],
 };
 
 test("one new save creates exactly one post in one transaction", async () => {
@@ -594,7 +683,64 @@ test("one new save creates exactly one post in one transaction", async () => {
   assert.equal(persistence.state.savedPlaces.length, 1);
   assert.equal(persistence.state.posts.length, 1);
   assert.equal(result.post.savedPlaceId, result.savedPlace.id);
-  assert.equal(persistence.state.images.length, 1);
+  assert.equal(persistence.state.images.length, 0);
+});
+
+test("save claims only an unclaimed upload owned by current user", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.addBlob("user-a", "upload-1");
+
+  await saveAndSharePlace(
+    "user-a",
+    {
+      ...saveInput,
+      images: [{ uploadId: "upload-1", caption: "Front room" }],
+    },
+    dependencies(persistence),
+  );
+
+  assert.equal(persistence.state.blobs[0]?.lifecycle, "CLAIMED");
+  assert.deepEqual(
+    persistence.state.images.map(({ blobUploadId, url, caption }) => ({
+      blobUploadId,
+      url,
+      caption,
+    })),
+    [
+      {
+        blobUploadId: "upload-1",
+        url: "https://blob.example/upload-1.webp",
+        caption: "Front room",
+      },
+    ],
+  );
+});
+
+test("save rejects another user's or already claimed upload without side effects", async () => {
+  for (const [ownerId, lifecycle] of [
+    ["user-b", "UPLOADED"],
+    ["user-a", "CLAIMED"],
+  ] as const) {
+    const persistence = new FakePostsPersistence();
+    persistence.addBlob(ownerId, "upload-1", lifecycle);
+    const before = structuredClone(persistence.state);
+
+    await assert.rejects(
+      saveAndSharePlace(
+        "user-a",
+        {
+          ...saveInput,
+          images: [{ uploadId: "upload-1", caption: null }],
+        },
+        dependencies(persistence),
+      ),
+      (error: unknown) =>
+        error instanceof PostError &&
+        error.code === "INVALID_INPUT" &&
+        error.status === 400,
+    );
+    assert.deepEqual(persistence.state, before);
+  }
 });
 
 test("repeated save returns existing save and post", async () => {
@@ -681,8 +827,17 @@ test("reshare rechecks friendship inside the save transaction", async () => {
 
 test("saved-place update edits content without creating another post", async () => {
   const persistence = new FakePostsPersistence();
+  persistence.addBlob("user-a", "upload-old");
+  persistence.addBlob("user-a", "upload-new");
   const deps = dependencies(persistence);
-  const created = await saveAndSharePlace("user-a", saveInput, deps);
+  const created = await saveAndSharePlace(
+    "user-a",
+    {
+      ...saveInput,
+      images: [{ uploadId: "upload-old", caption: null }],
+    },
+    deps,
+  );
 
   const updated = await updateSavedPlace(
     "user-a",
@@ -691,7 +846,8 @@ test("saved-place update edits content without creating another post", async () 
       rating: 4,
       review: "Updated review.",
       tags: ["updated"],
-      images: [],
+      status: "VISITED",
+      images: [{ uploadId: "upload-new", caption: "Patio" }],
     },
     persistence,
   );
@@ -699,7 +855,21 @@ test("saved-place update edits content without creating another post", async () 
   assert.equal(updated.rating, 4);
   assert.equal(updated.review, "Updated review.");
   assert.deepEqual(updated.tags, ["updated"]);
-  assert.equal(persistence.state.images.length, 0);
+  assert.equal(updated.status, "VISITED");
+  assert.deepEqual(
+    persistence.state.blobs.map(({ id, lifecycle }) => ({ id, lifecycle })),
+    [
+      { id: "upload-old", lifecycle: "PENDING_DELETE" },
+      { id: "upload-new", lifecycle: "CLAIMED" },
+    ],
+  );
+  assert.deepEqual(
+    persistence.state.images.map(({ blobUploadId, caption }) => ({
+      blobUploadId,
+      caption,
+    })),
+    [{ blobUploadId: "upload-new", caption: "Patio" }],
+  );
   assert.equal(persistence.state.posts.length, 1);
   assert.equal(persistence.state.posts[0]?.id, created.post.id);
 });
@@ -890,6 +1060,66 @@ test("place detail includes only current user and accepted-friend reviews", asyn
   );
 });
 
+test("manual place detail is opaque outside saver and accepted-friend access", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.seedPost("user-b", "manual-post", createdAt, "manual-place");
+
+  assert.equal(
+    (await getPlaceDetail("user-b", "manual-place", persistence)).place.id,
+    "manual-place",
+  );
+
+  for (const [viewerId, friendshipStatus] of [
+    ["user-a", "PENDING"],
+    ["user-c", null],
+  ] as const) {
+    if (friendshipStatus) {
+      persistence.addFriendship(viewerId, "user-b", friendshipStatus);
+    }
+    await assert.rejects(
+      getPlaceDetail(viewerId, "manual-place", persistence),
+      (error: unknown) =>
+        error instanceof PostError &&
+        error.code === "NOT_FOUND" &&
+        error.status === 404 &&
+        error.message === "Place not found",
+    );
+  }
+
+  persistence.addFriendship("user-a", "user-b", "ACCEPTED");
+  assert.equal(
+    (await getPlaceDetail("user-a", "manual-place", persistence)).place.id,
+    "manual-place",
+  );
+  persistence.removeFriendship("user-a", "user-b");
+  await assert.rejects(
+    getPlaceDetail("user-a", "manual-place", persistence),
+    (error: unknown) =>
+      error instanceof PostError &&
+      error.code === "NOT_FOUND" &&
+      error.status === 404,
+  );
+});
+
+test("verified provider-backed place detail remains globally readable", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.addPlace({
+    ...place("verified-place"),
+    externalSource: "google",
+    externalPlaceId: "google-1",
+  });
+
+  const detail = await getPlaceDetail(
+    "stranger",
+    "verified-place",
+    persistence,
+  );
+
+  assert.equal(detail.place.id, "verified-place");
+  assert.equal(detail.currentUserSave, null);
+  assert.deepEqual(detail.reviews, []);
+});
+
 test("post detail allows owner and accepted friends, then excludes removed friends", async () => {
   const persistence = new FakePostsPersistence();
   persistence.seedPost("user-a", "owner-post", createdAt);
@@ -960,10 +1190,12 @@ test("post detail returns not-found when friendship disappears before detail que
 test("delete saved place rejects non-author without changing state", async () => {
   const persistence = new FakePostsPersistence();
   persistence.seedPost("user-a", "post-1", createdAt, "place-1");
+  persistence.addBlob("user-a", "upload-1", "CLAIMED");
   persistence.state.images.push({
     id: "image-1",
     savedPlaceId: "saved-post-1",
-    url: "https://store.public.blob.vercel-storage.com/cafe.webp",
+    blobUploadId: "upload-1",
+    url: "https://blob.example/upload-1.webp",
     caption: null,
     sortOrder: 0,
   });
@@ -972,7 +1204,10 @@ test("delete saved place rejects non-author without changing state", async () =>
   await assert.rejects(
     deleteSavedPlace("user-b", "saved-post-1", persistence),
     (error: unknown) =>
-      error instanceof PostError && error.code === "FORBIDDEN",
+      error instanceof PostError &&
+      error.code === "NOT_FOUND" &&
+      error.status === 404 &&
+      error.message === "Saved place not found",
   );
   assert.deepEqual(persistence.state, before);
 });
@@ -980,10 +1215,12 @@ test("delete saved place rejects non-author without changing state", async () =>
 test("delete saved place by author cascades post and images", async () => {
   const persistence = new FakePostsPersistence();
   persistence.seedPost("user-a", "post-1", createdAt, "place-1");
+  persistence.addBlob("user-a", "upload-1", "CLAIMED");
   persistence.state.images.push({
     id: "image-1",
     savedPlaceId: "saved-post-1",
-    url: "https://store.public.blob.vercel-storage.com/cafe.webp",
+    blobUploadId: "upload-1",
+    url: "https://blob.example/upload-1.webp",
     caption: null,
     sortOrder: 0,
   });
@@ -991,6 +1228,17 @@ test("delete saved place by author cascades post and images", async () => {
   await deleteSavedPlace("user-a", "saved-post-1", persistence);
 
   assert.deepEqual(persistence.state, {
+    blobs: [
+      {
+        id: "upload-1",
+        ownerId: "user-a",
+        url: "https://blob.example/upload-1.webp",
+        pathname: "places/user-a/upload-1.webp",
+        lifecycle: "PENDING_DELETE",
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ],
     savedPlaces: [],
     posts: [],
     images: [],
@@ -1019,82 +1267,42 @@ test("save payload keeps Task 4 rating and review limits", () => {
   );
 });
 
-test("save payload accepts no images without Blob host configuration", () => {
-  withBlobPublicHost(undefined, () => {
-    assert.deepEqual(
+test("save payload accepts upload IDs and rejects client-supplied Blob URLs", () => {
+  const parsed = parseSavePlaceInput({
+    ...saveInput,
+    images: [{ uploadId: "upload-1", caption: "Front room" }],
+  });
+
+  assert.deepEqual(parsed.images, [
+    { uploadId: "upload-1", caption: "Front room" },
+  ]);
+  assert.throws(
+    () =>
       parseSavePlaceInput({
         ...saveInput,
-        images: [],
-      }).images,
-      [],
-    );
-  });
+        images: [
+          {
+            url: "https://store.public.blob.vercel-storage.com/forged.webp",
+            caption: null,
+          },
+        ],
+      }),
+    PostError,
+  );
 });
 
-test("save payload rejects images when Blob host configuration is missing or invalid", () => {
-  for (const configuredHost of [
-    undefined,
-    "https://store.public.blob.vercel-storage.com",
-    "%",
-  ]) {
-    withBlobPublicHost(configuredHost, () => {
-      assert.throws(
-        () => parseSavePlaceInput(saveInput),
-        (error: unknown) =>
-          error instanceof PostError &&
-          error.code === "IMAGE_UPLOADS_NOT_CONFIGURED" &&
-          error.status === 503 &&
-          error.message === "Image uploads are not configured",
-      );
-    });
-  }
-});
-
-test("save payload accepts only the configured exact Blob host", () => {
-  withBlobPublicHost(trustedBlobHost, () => {
-    const trusted =
-      `https://${trustedBlobHost}/places/user-a/cafe.webp`;
-    assert.equal(
+test("save payload rejects duplicate upload IDs", () => {
+  assert.throws(
+    () =>
       parseSavePlaceInput({
         ...saveInput,
-        images: [{ url: trusted, caption: null }],
-      }).images[0]?.url,
-      trusted,
-    );
-    assert.throws(
-      () =>
-        parseSavePlaceInput({
-          ...saveInput,
-          images: [
-            {
-              url: "https://other.public.blob.vercel-storage.com/cafe.jpg",
-            },
-          ],
-        }),
-      PostError,
-    );
-  });
-});
-
-test("save payload keeps HTTPS image path constraints", () => {
-  for (const url of [
-    `http://${trustedBlobHost}/cafe.webp`,
-    "https://tracker.example/cafe.webp",
-    `https://${trustedBlobHost}.evil.test/cafe.webp`,
-    `https://${trustedBlobHost}/cafe.svg`,
-    `https://${trustedBlobHost}/cafe.webp?user=tracked`,
-    `https://${trustedBlobHost}/cafe.webp#tracked`,
-  ]) {
-    assert.throws(
-      () =>
-        parseSavePlaceInput({
-          ...saveInput,
-          images: [{ url }],
-        }),
-      PostError,
-      url,
-    );
-  }
+        images: [
+          { uploadId: "upload-1", caption: null },
+          { uploadId: "upload-1", caption: null },
+        ],
+      }),
+    PostError,
+  );
 });
 
 test("Task 5 pages stay protected and Add submits to saved API", () => {

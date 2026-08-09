@@ -3,10 +3,16 @@ import {
   requireCurrentUser,
   UnauthorizedError,
 } from "@/lib/current-user";
+import {
+  enforceRateLimit,
+  RateLimitError,
+  rateLimitResponse,
+} from "@/lib/rate-limit";
 
 export async function GET(request: Request) {
   try {
     const currentUser = await requireCurrentUser();
+    await enforceRateLimit(request, currentUser.id, "userSearch");
     const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
 
     if (!query) return Response.json({ users: [] });
@@ -34,6 +40,7 @@ export async function GET(request: Request) {
     if (error instanceof UnauthorizedError) {
       return Response.json({ error: error.message }, { status: 401 });
     }
+    if (error instanceof RateLimitError) return rateLimitResponse(error);
     return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 }

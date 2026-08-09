@@ -28,6 +28,7 @@ import {
 } from "./interactions";
 import PostCard from "../components/PostCard";
 import type { FeedPost, SavePlaceInput } from "./posts";
+import { withSerializableRetry } from "./serializable";
 import { handleNotificationsGet } from "../app/api/notifications/route";
 import { handleNotificationsPatch } from "../app/api/notifications/read/route";
 import { handleCommentPost } from "../app/api/posts/[id]/comments/route";
@@ -58,6 +59,8 @@ class FakeInteractionPersistence implements InteractionPersistence {
   };
   failNotification = false;
   removeFriendshipOnNextTransaction = false;
+  removeFriendshipAfterWriteConflict = false;
+  transactionAttempts = 0;
   private nextCommentId = 1;
   private nextNotificationId = 1;
   private nextSaveId = 1;
@@ -133,64 +136,82 @@ class FakeInteractionPersistence implements InteractionPersistence {
   async transaction<T>(
     operation: (store: InteractionStore) => Promise<T>,
   ): Promise<T> {
-    if (this.removeFriendshipOnNextTransaction) {
-      this.removeFriendshipOnNextTransaction = false;
-      this.removeFriendship();
-    }
+    const execute = async () => {
+      this.transactionAttempts += 1;
+      if (this.removeFriendshipOnNextTransaction) {
+        this.removeFriendshipOnNextTransaction = false;
+        this.removeFriendship();
+      }
 
-    const base = structuredClone(this.state);
-    const pending = structuredClone(this.state);
-    const result = await operation(this.store(pending));
+      const base = structuredClone(this.state);
+      const pending = structuredClone(this.state);
+      const result = await operation(this.store(pending));
 
-    if (this.competingTransactions > 0 && this.transactionGate) {
-      this.competingTransactions -= 1;
-      if (this.competingTransactions === 0) this.releaseTransactions?.();
-      await this.transactionGate;
-    }
+      if (this.removeFriendshipAfterWriteConflict) {
+        this.removeFriendshipAfterWriteConflict = false;
+        this.removeFriendship();
+        throw { code: "P2034" };
+      }
 
-    for (const like of pending.likes) {
-      if (
-        base.likes.some(
+      if (this.competingTransactions > 0 && this.transactionGate) {
+        this.competingTransactions -= 1;
+        if (this.competingTransactions === 0) this.releaseTransactions?.();
+        await this.transactionGate;
+      }
+
+      for (const like of pending.likes) {
+        if (
+          base.likes.some(
+            (item) =>
+              item.postId === like.postId && item.userId === like.userId,
+          )
+        ) {
+          continue;
+        }
+        if (
+          this.state.likes.some(
+            (item) =>
+              item.postId === like.postId && item.userId === like.userId,
+          )
+        ) {
+          throw { code: "P2002" };
+        }
+      }
+      for (const like of base.likes) {
+        const removed = !pending.likes.some(
           (item) =>
             item.postId === like.postId && item.userId === like.userId,
-        )
-      ) {
-        continue;
-      }
-      if (
-        this.state.likes.some(
+        );
+        const alreadyRemoved = !this.state.likes.some(
           (item) =>
             item.postId === like.postId && item.userId === like.userId,
-        )
-      ) {
-        throw { code: "P2002" };
+        );
+        if (removed && alreadyRemoved) throw { code: "P2025" };
       }
-    }
-    for (const like of base.likes) {
-      const removed = !pending.likes.some(
-        (item) =>
-          item.postId === like.postId && item.userId === like.userId,
-      );
-      const alreadyRemoved = !this.state.likes.some(
-        (item) =>
-          item.postId === like.postId && item.userId === like.userId,
-      );
-      if (removed && alreadyRemoved) throw { code: "P2025" };
-    }
 
-    this.state = pending;
-    return result;
+      this.state = pending;
+      return result;
+    };
+
+    return this.removeFriendshipAfterWriteConflict
+      ? withSerializableRetry(execute)
+      : execute();
   }
 
   private store(state: State): InteractionStore {
     return {
-      findPost: async (id) => structuredClone(this.posts.get(id) ?? null),
-      findFriendshipByPairKey: async (pairKey) =>
-        structuredClone(
-          state.friendships.find(
-            (friendship) => friendship.pairKey === pairKey,
-          ) ?? null,
-        ),
+      findVisiblePost: async (viewerId, id) => {
+        const post = this.posts.get(id);
+        if (!post || post.deletedAt) return null;
+        if (post.authorId === viewerId) return structuredClone(post);
+        const pairKey = [viewerId, post.authorId].sort().join(":");
+        const friendship = state.friendships.find(
+          (item) => item.pairKey === pairKey,
+        );
+        return friendship?.status === "ACCEPTED"
+          ? structuredClone(post)
+          : null;
+      },
       findLike: async (postId, userId) =>
         structuredClone(
           state.likes.find(
@@ -371,6 +392,7 @@ class FakeInteractionPersistence implements InteractionPersistence {
       review: null,
       tags: [],
       sourcePostId: input.sourcePostId,
+      status: input.status,
       createdAt,
       updatedAt: createdAt,
     };
@@ -458,6 +480,46 @@ test("visibility is checked inside the like mutation transaction", async () => {
 
   assert.equal(persistence.state.likes.length, 0);
   assert.equal(persistence.state.notifications.length, 0);
+});
+
+test("like retries after concurrent friend removal and leaves no post-removal write", async () => {
+  const persistence = new FakeInteractionPersistence();
+  persistence.seedPost();
+  persistence.addFriendship();
+  persistence.removeFriendshipAfterWriteConflict = true;
+
+  await assert.rejects(
+    togglePostLike("user-a", "post-1", true, persistence),
+    (error: unknown) =>
+      error instanceof InteractionError &&
+      error.code === "NOT_FOUND" &&
+      error.status === 404 &&
+      error.message === "Post not found",
+  );
+
+  assert.equal(persistence.transactionAttempts, 2);
+  assert.deepEqual(persistence.state.likes, []);
+  assert.deepEqual(persistence.state.notifications, []);
+});
+
+test("comment retries after concurrent friend removal and leaves no post-removal write", async () => {
+  const persistence = new FakeInteractionPersistence();
+  persistence.seedPost();
+  persistence.addFriendship();
+  persistence.removeFriendshipAfterWriteConflict = true;
+
+  await assert.rejects(
+    createPostComment("user-a", "post-1", "race", persistence),
+    (error: unknown) =>
+      error instanceof InteractionError &&
+      error.code === "NOT_FOUND" &&
+      error.status === 404 &&
+      error.message === "Post not found",
+  );
+
+  assert.equal(persistence.transactionAttempts, 2);
+  assert.deepEqual(persistence.state.comments, []);
+  assert.deepEqual(persistence.state.notifications, []);
 });
 
 test("like desired state is replay-idempotent", async () => {
@@ -846,6 +908,7 @@ test("PostCard renders interactive controls and existing inline comments", () =>
       review: null,
       tags: [],
       sourcePostId: null,
+      status: "SAVED",
       createdAt,
       updatedAt: createdAt,
       place: {

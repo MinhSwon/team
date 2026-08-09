@@ -1,7 +1,4 @@
-import type { Friendship } from "@prisma/client";
-
 import { prisma } from "@/lib/db";
-import { friendPairKey } from "@/lib/friendships";
 import { normalizeUsername } from "@/lib/validation";
 
 export type ProfileUserRecord = {
@@ -10,6 +7,10 @@ export type ProfileUserRecord = {
   name: string;
   image: string | null;
   bio: string | null;
+};
+
+export type VisibleProfileRecord = ProfileUserRecord & {
+  posts: ProfilePost[];
 };
 
 export type ProfilePost = {
@@ -38,10 +39,10 @@ type ProfileUpdate = {
 
 export interface ProfilePersistence {
   findUserByUsername(username: string): Promise<ProfileUserRecord | null>;
-  findFriendshipByPairKey(
-    pairKey: string,
-  ): Promise<Pick<Friendship, "status"> | null>;
-  findPostsByAuthor(authorId: string): Promise<ProfilePost[]>;
+  findVisibleProfile(
+    viewerId: string,
+    username: string,
+  ): Promise<VisibleProfileRecord | null>;
   updateUser(
     userId: string,
     data: ProfileUpdate,
@@ -76,39 +77,55 @@ const defaultPersistence: ProfilePersistence = {
       where: { username },
       select: publicUserSelect,
     }),
-  findFriendshipByPairKey: (pairKey) =>
-    prisma.friendship.findUnique({
-      where: { pairKey },
-      select: { status: true },
-    }),
-  findPostsByAuthor: (authorId) =>
-    prisma.post.findMany({
-      where: { authorId, deletedAt: null },
-      select: {
-        id: true,
-        createdAt: true,
-        savedPlace: {
-          select: {
-            rating: true,
-            review: true,
-            tags: true,
-            place: {
-              select: {
-                id: true,
-                name: true,
-                address: true,
-                area: true,
-              },
-            },
-            images: {
-              select: { url: true },
-              orderBy: { sortOrder: "asc" },
-              take: 1,
+  findVisibleProfile: (viewerId, username) =>
+    prisma.user.findFirst({
+      where: {
+        username,
+        OR: [
+          { id: viewerId },
+          {
+            requestsSent: {
+              some: { addresseeId: viewerId, status: "ACCEPTED" },
             },
           },
+          {
+            requestsIn: {
+              some: { requesterId: viewerId, status: "ACCEPTED" },
+            },
+          },
+        ],
+      },
+      select: {
+        ...publicUserSelect,
+        posts: {
+          where: { deletedAt: null },
+          select: {
+            id: true,
+            createdAt: true,
+            savedPlace: {
+              select: {
+                rating: true,
+                review: true,
+                tags: true,
+                place: {
+                  select: {
+                    id: true,
+                    name: true,
+                    address: true,
+                    area: true,
+                  },
+                },
+                images: {
+                  select: { url: true },
+                  orderBy: { sortOrder: "asc" },
+                  take: 1,
+                },
+              },
+            },
+          },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         },
       },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     }),
   updateUser: (id, data) =>
     prisma.user.update({
@@ -223,7 +240,8 @@ export async function getProfile(
   username: string,
   persistence: ProfilePersistence = defaultPersistence,
 ) {
-  const user = await persistence.findUserByUsername(
+  const user = await persistence.findVisibleProfile(
+    viewerId,
     normalizeUsername(username),
   );
   if (!user) {
@@ -231,19 +249,12 @@ export async function getProfile(
   }
 
   const self = viewerId === user.id;
-  if (!self) {
-    const friendship = await persistence.findFriendshipByPairKey(
-      friendPairKey(viewerId, user.id),
-    );
-    if (friendship?.status !== "ACCEPTED") {
-      throw new ProfileError("Profile not found", "NOT_FOUND", 404);
-    }
-  }
+  const { posts, ...profileUser } = user;
 
   return {
-    ...publicUser(user),
+    ...publicUser(profileUser),
     friendshipState: self ? ("SELF" as const) : ("ACCEPTED" as const),
-    posts: await persistence.findPostsByAuthor(user.id),
+    posts,
   };
 }
 

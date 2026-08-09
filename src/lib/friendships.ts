@@ -7,6 +7,10 @@ import type {
 } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
+import {
+  MAX_SERIALIZABLE_ATTEMPTS,
+  withSerializableRetry,
+} from "@/lib/serializable";
 
 type NewFriendship = Pick<
   Friendship,
@@ -49,7 +53,7 @@ export interface FriendshipStore {
   }): Promise<Friendship | null>;
   deleteFriendship(id: string): Promise<Friendship>;
   createNotification(input: NewNotification): Promise<void>;
-  findPost(id: string): Promise<Post | null>;
+  findVisiblePost(viewerId: string, id: string): Promise<Post | null>;
 }
 
 export type FriendshipLookup = Pick<
@@ -59,7 +63,7 @@ export type FriendshipLookup = Pick<
 
 export type PostVisibilityStore = Pick<
   FriendshipStore,
-  "findFriendshipByPairKey" | "findPost"
+  "findVisiblePost"
 >;
 
 export interface FriendshipPersistence extends FriendshipStore {
@@ -160,7 +164,30 @@ function createPrismaStore(
     createNotification: async (data) => {
       await client.notification.create({ data });
     },
-    findPost: (id) => client.post.findUnique({ where: { id } }),
+    findVisiblePost: (viewerId, id) =>
+      client.post.findFirst({
+        where: {
+          id,
+          deletedAt: null,
+          OR: [
+            { authorId: viewerId },
+            {
+              author: {
+                requestsSent: {
+                  some: { addresseeId: viewerId, status: "ACCEPTED" },
+                },
+              },
+            },
+            {
+              author: {
+                requestsIn: {
+                  some: { requesterId: viewerId, status: "ACCEPTED" },
+                },
+              },
+            },
+          ],
+        },
+      }),
   };
 }
 
@@ -169,8 +196,13 @@ const defaultStore = createPrismaStore(prisma);
 const defaultPersistence: FriendshipPersistence = {
   ...defaultStore,
   transaction: (operation) =>
-    prisma.$transaction((transaction) =>
-      operation(createPrismaStore(transaction)),
+    withSerializableRetry(
+      () =>
+        prisma.$transaction(
+          (transaction) => operation(createPrismaStore(transaction)),
+          { isolationLevel: "Serializable" },
+        ),
+      MAX_SERIALIZABLE_ATTEMPTS,
     ),
 };
 
@@ -346,12 +378,8 @@ export async function assertCanViewPost(
   postId: string,
   persistence: PostVisibilityStore = defaultPersistence,
 ): Promise<Post> {
-  const post = await persistence.findPost(postId);
-
-  if (!post || post.deletedAt) {
-    throw new FriendshipError("Post not found", "NOT_FOUND", 404);
-  }
-  if (!(await canViewUser(viewerId, post.authorId, persistence))) {
+  const post = await persistence.findVisiblePost(viewerId, postId);
+  if (!post) {
     throw new FriendshipError("Post not found", "NOT_FOUND", 404);
   }
 

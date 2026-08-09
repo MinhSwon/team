@@ -7,6 +7,11 @@ import {
   requireCurrentUser,
   UnauthorizedError,
 } from "@/lib/current-user";
+import {
+  enforceRateLimit,
+  RateLimitError,
+  rateLimitResponse,
+} from "@/lib/rate-limit";
 
 function errorResponse(error: unknown): Response {
   if (error instanceof UnauthorizedError) {
@@ -15,6 +20,7 @@ function errorResponse(error: unknown): Response {
   if (error instanceof FriendshipError) {
     return Response.json({ error: error.message }, { status: error.status });
   }
+  if (error instanceof RateLimitError) return rateLimitResponse(error);
   if (error instanceof SyntaxError) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
@@ -33,6 +39,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const currentUser = await requireCurrentUser();
+    await enforceRateLimit(request, currentUser.id, "friendRequest");
     const body: unknown = await request.json();
 
     if (

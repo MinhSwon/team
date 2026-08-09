@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { Place } from "@prisma/client";
+import type { Place, Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
 import { PLACE_LIMITS, normalizePlaceText } from "@/lib/validation";
@@ -48,12 +48,12 @@ export type CanonicalPlaceData = Omit<
 >;
 
 export interface PlaceStore {
-  findById(id: string): Promise<Place | null>;
+  findById(id: string, viewerId?: string): Promise<Place | null>;
   findByExternal(
     externalSource: string,
     externalPlaceId: string,
   ): Promise<Place | null>;
-  searchLocal(normalizedQuery: string): Promise<Place[]>;
+  searchLocal(normalizedQuery: string, viewerId?: string): Promise<Place[]>;
   create(data: CanonicalPlaceData): Promise<Place>;
   upsertManual(
     data: CanonicalPlaceData & { dedupeKey: string },
@@ -192,10 +192,56 @@ export type PlaceDependencies = {
   store?: PlaceStore;
   fetch?: typeof fetch;
   apiKey?: string;
+  viewerId?: string;
 };
 
+function visiblePlaceWhere(viewerId: string): Prisma.PlaceWhereInput {
+  return {
+    OR: [
+      {
+        externalSource: { not: null },
+        externalPlaceId: { not: null },
+      },
+      {
+        savedBy: {
+          some: {
+            OR: [
+              { userId: viewerId },
+              {
+                user: {
+                  requestsSent: {
+                    some: {
+                      addresseeId: viewerId,
+                      status: "ACCEPTED",
+                    },
+                  },
+                },
+              },
+              {
+                user: {
+                  requestsIn: {
+                    some: {
+                      requesterId: viewerId,
+                      status: "ACCEPTED",
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    ],
+  };
+}
+
 const defaultStore: PlaceStore = {
-  findById: (id) => prisma.place.findUnique({ where: { id } }),
+  findById: (id, viewerId) =>
+    viewerId
+      ? prisma.place.findFirst({
+          where: { id, ...visiblePlaceWhere(viewerId) },
+        })
+      : Promise.resolve(null),
   findByExternal: (externalSource, externalPlaceId) =>
     prisma.place.findUnique({
       where: {
@@ -205,17 +251,24 @@ const defaultStore: PlaceStore = {
         },
       },
     }),
-  searchLocal: (normalizedQuery) =>
-    prisma.place.findMany({
-      where: {
-        OR: [
-          { normalizedName: { contains: normalizedQuery } },
-          { normalizedAddress: { contains: normalizedQuery } },
-        ],
-      },
-      orderBy: [{ name: "asc" }, { id: "asc" }],
-      take: 20,
-    }),
+  searchLocal: (normalizedQuery, viewerId) =>
+    viewerId
+      ? prisma.place.findMany({
+          where: {
+            AND: [
+              visiblePlaceWhere(viewerId),
+              {
+                OR: [
+                  { normalizedName: { contains: normalizedQuery } },
+                  { normalizedAddress: { contains: normalizedQuery } },
+                ],
+              },
+            ],
+          },
+          orderBy: [{ name: "asc" }, { id: "asc" }],
+          take: 20,
+        })
+      : Promise.resolve([]),
   create: (data) => prisma.place.create({ data }),
   upsertManual: (data) =>
     prisma.place.upsert({
@@ -299,6 +352,7 @@ async function searchGoogle(
           "places.id,places.displayName,places.formattedAddress,places.location,places.websiteUri",
       },
       body: JSON.stringify({ textQuery: query }),
+      signal: AbortSignal.timeout(3000),
     },
   );
 
@@ -379,7 +433,11 @@ async function expandShortMapsUrl(
     return url;
   }
 
-  const response = await fetchFn(url, { method: "HEAD", redirect: "follow" });
+  const response = await fetchFn(url, {
+    method: "HEAD",
+    redirect: "follow",
+    signal: AbortSignal.timeout(3000),
+  });
   if (!response.ok || !response.url) throw new Error("Maps link failed");
   return mapsUrl(response.url);
 }
@@ -397,6 +455,7 @@ async function fetchGooglePlace(
         "X-Goog-FieldMask":
           "id,displayName,formattedAddress,location,websiteUri",
       },
+      signal: AbortSignal.timeout(3000),
     },
   );
 
@@ -502,7 +561,10 @@ export async function searchPlaces(
   if (!normalizedQuery) return [];
 
   const store = dependencies.store ?? defaultStore;
-  const localPlaces = await store.searchLocal(normalizedQuery);
+  const localPlaces = await store.searchLocal(
+    normalizedQuery,
+    dependencies.viewerId,
+  );
   const manualKeys = new Set<string>();
   const externalKeys = new Set<string>();
   const dedupedLocal = localPlaces.filter((place) => {
@@ -552,7 +614,10 @@ export async function resolvePlace(
 
   if (input.type === "search") {
     if (input.candidate.source === "local") {
-      const existing = await store.findById(input.candidate.id);
+      const existing = await store.findById(
+        input.candidate.id,
+        dependencies.viewerId,
+      );
       if (existing) return existing;
       throw new PlaceResolutionError(
         "Place no longer exists",

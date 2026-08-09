@@ -6,6 +6,11 @@ import {
   createPostComment,
   InteractionError,
 } from "@/lib/interactions";
+import {
+  enforceRateLimit,
+  RateLimitError,
+  rateLimitResponse,
+} from "@/lib/rate-limit";
 
 type CommentRouteDependencies = {
   requireUser: () => Promise<{
@@ -15,6 +20,7 @@ type CommentRouteDependencies = {
     image?: string | null;
   }>;
   createPostComment: typeof createPostComment;
+  rateLimit?: (request: Request, userId: string) => Promise<void>;
 };
 
 function errorResponse(error: unknown): Response {
@@ -24,6 +30,7 @@ function errorResponse(error: unknown): Response {
   if (error instanceof InteractionError) {
     return Response.json({ error: error.message }, { status: error.status });
   }
+  if (error instanceof RateLimitError) return rateLimitResponse(error);
   if (error instanceof SyntaxError) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
@@ -37,6 +44,10 @@ export async function handleCommentPost(
 ) {
   try {
     const currentUser = await dependencies.requireUser();
+    await (dependencies.rateLimit ?? (() => Promise.resolve()))(
+      request,
+      currentUser.id,
+    );
     const { id } = await context.params;
     const input: unknown = await request.json();
     const body =
@@ -72,5 +83,7 @@ export function POST(
   return handleCommentPost(request, context, {
     requireUser: requireCurrentUser,
     createPostComment,
+    rateLimit: (nextRequest, userId) =>
+      enforceRateLimit(nextRequest, userId, "comment"),
   });
 }

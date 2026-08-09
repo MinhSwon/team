@@ -22,8 +22,7 @@ const post: Post = {
 
 test("post GET returns not-found for a nonfriend", async () => {
   const persistence: PostVisibilityStore = {
-    findPost: async (id) => (id === post.id ? post : null),
-    findFriendshipByPairKey: async () => null,
+    findVisiblePost: async () => null,
   };
 
   const response = await handlePostGet(

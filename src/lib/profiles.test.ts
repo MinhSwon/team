@@ -45,13 +45,20 @@ class FakeProfilePersistence implements ProfilePersistence {
     return this.users.find((user) => user.username === username) ?? null;
   }
 
-  async findFriendshipByPairKey(pairKey: string) {
-    const status = this.friendships.get(pairKey);
-    return status ? { status } : null;
-  }
-
-  async findPostsByAuthor(authorId: string) {
-    return this.posts.get(authorId) ?? [];
+  async findVisibleProfile(viewerId: string, username: string) {
+    const user = await this.findUserByUsername(username);
+    if (!user) return null;
+    const pairKey = [viewerId, user.id].sort().join(":");
+    if (
+      viewerId !== user.id &&
+      this.friendships.get(pairKey) !== "ACCEPTED"
+    ) {
+      return null;
+    }
+    return {
+      ...user,
+      posts: this.posts.get(user.id) ?? [],
+    };
   }
 
   async updateUser(

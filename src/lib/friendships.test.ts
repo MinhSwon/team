@@ -91,7 +91,8 @@ class FakeFriendshipPersistence implements FriendshipPersistence {
           if (index >= 0) this.notifications.splice(index, 1);
         });
       },
-      findPost: (id) => this.findPost(id),
+      findVisiblePost: (viewerId, id) =>
+        this.findVisiblePost(viewerId, id),
     };
 
     try {
@@ -187,6 +188,13 @@ class FakeFriendshipPersistence implements FriendshipPersistence {
 
   async findPost(id: string) {
     return this.posts.find((post) => post.id === id) ?? null;
+  }
+
+  async findVisiblePost(viewerId: string, id: string) {
+    const post = await this.findPost(id);
+    if (!post || post.deletedAt) return null;
+    if (post.authorId === viewerId) return post;
+    return (await areFriends(viewerId, post.authorId, this)) ? post : null;
   }
 
   addPost(authorId: string): Post {
