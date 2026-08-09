@@ -25,15 +25,15 @@ test("private media proxy authorizes every read and disables shared caching", as
         access: string;
         token: string;
         useCache: boolean;
+        abortSignal: AbortSignal;
       },
     ) => {
       providerCalls += 1;
       assert.equal(pathname, "places/owner-1/upload-1.webp");
-      assert.deepEqual(options, {
-        access: "private",
-        token: "blob-token",
-        useCache: false,
-      });
+      assert.equal(options.access, "private");
+      assert.equal(options.token, "blob-token");
+      assert.equal(options.useCache, false);
+      assert.ok(options.abortSignal instanceof AbortSignal);
       return {
         statusCode: 200,
         stream: new ReadableStream<Uint8Array>({

@@ -59,6 +59,7 @@ export type UploadDependencies = {
 };
 
 const maxImageBytes = 5 * 1024 * 1024;
+const maxUploadRequestBytes = maxImageBytes + 256 * 1024;
 const imageExtensions = {
   "image/jpeg": "jpg",
   "image/png": "png",
@@ -144,6 +145,22 @@ export async function handleUpload(
       { error: "Image uploads are not configured" },
       { status: 503 },
     );
+  }
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength) {
+    if (!/^\d+$/.test(contentLength)) {
+      return Response.json(
+        { error: "Invalid Content-Length" },
+        { status: 400 },
+      );
+    }
+    if (BigInt(contentLength) > BigInt(maxUploadRequestBytes)) {
+      return Response.json(
+        { error: "Upload request is too large" },
+        { status: 413 },
+      );
+    }
   }
 
   let form: FormData;

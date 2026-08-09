@@ -524,7 +524,7 @@ export async function convertLegacyBlobUploads({
   put,
   del,
   token,
-  take = 100,
+  take = 4,
   allowedHosts = configuredLegacyBlobHosts(),
   timeoutMs = providerTimeoutMs,
 }: {
@@ -570,96 +570,89 @@ export async function convertLegacyBlobUploads({
     leaseUntil,
     take,
   );
-  const outcomes = await Promise.all(
-    candidates.map(async (candidate) => {
-      let privateReady = Boolean(candidate.url);
-      try {
-        if (!privateReady) {
-          const sourceDescriptor = trustedLegacyBlobSource(
-            candidate.sourceUrl,
-            allowedHosts,
-          );
-          if (!sourceDescriptor) {
-            throw new Error("Legacy Blob source host is not owned");
-          }
-          const source = await withProviderDeadline(
-            (abortSignal) =>
-              get(candidate.sourceUrl, {
-                access: sourceDescriptor.access,
-                token,
-                useCache: false,
-                abortSignal,
-              }),
-            timeoutMs,
-          );
-          if (
-            !source ||
-            source.statusCode !== 200 ||
-            !source.stream
-          ) {
-            throw new Error("Legacy Blob source not found");
-          }
-          if (
-            source.blob.size !== null &&
-            source.blob.size > maxLegacyImageBytes
-          ) {
-            throw new Error("Legacy image exceeds 5 MB");
-          }
-          const bytes = await readBoundedStream(source.stream, timeoutMs);
-          const contentType = imageTypeFromBytes(bytes);
-          if (!contentType || !imageMagicTypes.includes(contentType)) {
-            throw new Error("Legacy image bytes are not an allowed image");
-          }
-          const privateBlob = await withProviderDeadline(
-            (abortSignal) =>
-              put(candidate.pathname, bytes, {
-                access: "private",
-                addRandomSuffix: false,
-                allowOverwrite: true,
-                contentType,
-                token,
-                abortSignal,
-              }),
-            timeoutMs,
-          );
-          if (
-            !(await store.recordPrivateCopy(
-              candidate.id,
-              candidate.leaseUntil,
-              { ...privateBlob, contentType },
-            ))
-          ) {
-            throw new Error("Blob conversion lease lost");
-          }
-          privateReady = true;
+  let converted = 0;
+  let failed = 0;
+  for (const candidate of candidates) {
+    let privateReady = Boolean(candidate.url);
+    try {
+      if (!privateReady) {
+        const sourceDescriptor = trustedLegacyBlobSource(
+          candidate.sourceUrl,
+          allowedHosts,
+        );
+        if (!sourceDescriptor) {
+          throw new Error("Legacy Blob source host is not owned");
         }
-
-        await deleteIdempotently(del, candidate.sourceUrl, timeoutMs);
+        const source = await withProviderDeadline(
+          (abortSignal) =>
+            get(candidate.sourceUrl, {
+              access: sourceDescriptor.access,
+              token,
+              useCache: false,
+              abortSignal,
+            }),
+          timeoutMs,
+        );
+        if (!source || source.statusCode !== 200 || !source.stream) {
+          throw new Error("Legacy Blob source not found");
+        }
         if (
-          !(await store.finishConversion(
+          source.blob.size !== null &&
+          source.blob.size > maxLegacyImageBytes
+        ) {
+          throw new Error("Legacy image exceeds 5 MB");
+        }
+        const bytes = await readBoundedStream(source.stream, timeoutMs);
+        const contentType = imageTypeFromBytes(bytes);
+        if (!contentType || !imageMagicTypes.includes(contentType)) {
+          throw new Error("Legacy image bytes are not an allowed image");
+        }
+        const privateBlob = await withProviderDeadline(
+          (abortSignal) =>
+            put(candidate.pathname, bytes, {
+              access: "private",
+              addRandomSuffix: false,
+              allowOverwrite: true,
+              contentType,
+              token,
+              abortSignal,
+            }),
+          timeoutMs,
+        );
+        if (
+          !(await store.recordPrivateCopy(
             candidate.id,
             candidate.leaseUntil,
+            { ...privateBlob, contentType },
           ))
         ) {
           throw new Error("Blob conversion lease lost");
         }
-        return "converted" as const;
-      } catch (error) {
-        await store.releaseConversionClaim(
+        privateReady = true;
+      }
+
+      await deleteIdempotently(del, candidate.sourceUrl, timeoutMs);
+      if (
+        !(await store.finishConversion(
           candidate.id,
           candidate.leaseUntil,
-          privateReady,
-          errorText(error),
-        );
-        return "failed" as const;
+        ))
+      ) {
+        throw new Error("Blob conversion lease lost");
       }
-    }),
-  );
+      converted += 1;
+    } catch (error) {
+      await store.releaseConversionClaim(
+        candidate.id,
+        candidate.leaseUntil,
+        privateReady,
+        errorText(error),
+      );
+      failed += 1;
+    }
+  }
 
-  return {
-    converted: outcomes.filter((outcome) => outcome === "converted").length,
-    failed: outcomes.filter((outcome) => outcome === "failed").length,
-  };
+  return { converted, failed };
 }
 
 export function isBlobLifecycle(value: string): value is BlobLifecycle {

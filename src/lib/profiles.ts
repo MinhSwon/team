@@ -6,7 +6,6 @@ export type ProfileUserRecord = {
   id: string;
   username: string;
   name: string;
-  image: string | null;
   bio: string | null;
 };
 
@@ -68,7 +67,6 @@ const publicUserSelect = {
   id: true,
   username: true,
   name: true,
-  image: true,
   bio: true,
 } as const;
 
@@ -232,7 +230,6 @@ function publicUser(user: ProfileUserRecord) {
   return {
     username: user.username,
     name: user.name,
-    avatar: null,
     bio: user.bio,
   };
 }

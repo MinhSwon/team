@@ -1,12 +1,13 @@
 DO $$
 DECLARE
+  invalid_hosts text;
   unsupported_urls text;
   ownership_mismatches text;
   duplicate_urls text;
   owned_hosts text[];
 BEGIN
   owned_hosts := ARRAY(
-    SELECT trim(host)
+    SELECT lower(trim(host))
       FROM unnest(
         string_to_array(
           coalesce(
@@ -19,12 +20,26 @@ BEGIN
      WHERE trim(host) <> ''
   );
 
+  SELECT string_agg(host, ', ' ORDER BY host)
+    INTO invalid_hosts
+    FROM unnest(owned_hosts) AS host
+   WHERE host !~ '^([a-z0-9]|[a-z0-9][a-z0-9-]*[a-z0-9])\.(public|private)\.blob\.vercel-storage\.com$';
+
+  IF invalid_hosts IS NOT NULL
+     OR (
+       coalesce(array_length(owned_hosts, 1), 0) = 0
+       AND EXISTS (SELECT 1 FROM "SavedPlaceImage")
+     ) THEN
+    RAISE EXCEPTION
+      'Invalid placedecide.legacy_blob_store_hosts. Configure exact owned Vercel Blob hostnames only: %',
+      coalesce(invalid_hosts, '<empty>');
+  END IF;
+
   SELECT string_agg(image."id" || '=' || image."url", ', ' ORDER BY image."id")
     INTO unsupported_urls
     FROM "SavedPlaceImage" image
    WHERE image."url" !~ '^https://[^/]+/.+'
-      OR coalesce(array_length(owned_hosts, 1), 0) = 0
-      OR NOT (split_part(image."url", '/', 3) = ANY(owned_hosts));
+      OR NOT (lower(split_part(image."url", '/', 3)) = ANY(owned_hosts));
 
   IF unsupported_urls IS NOT NULL THEN
     RAISE EXCEPTION

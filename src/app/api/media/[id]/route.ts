@@ -15,6 +15,7 @@ type MediaGet = (
     access: "private";
     token: string;
     useCache: false;
+    abortSignal: AbortSignal;
   },
 ) => Promise<{
   statusCode: number;
@@ -81,6 +82,7 @@ export async function handleMediaRequest(
       access: "private",
       token: dependencies.token,
       useCache: false,
+      abortSignal: AbortSignal.timeout(30_000),
     });
     if (
       !blob ||

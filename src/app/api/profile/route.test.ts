@@ -19,7 +19,6 @@ test("profile GET uses session viewer and returns public fields only", async () 
         return {
           username: "alice",
           name: "Alice",
-          avatar: null,
           bio: null,
           friendshipState: "SELF" as const,
           posts: [],
@@ -59,7 +58,6 @@ test("profile PATCH updates only session user identity", async () => {
         return {
           username: "alice",
           name: "Alice Smith",
-          avatar: null,
           bio: null,
         };
       },
@@ -71,7 +69,6 @@ test("profile PATCH updates only session user identity", async () => {
   assert.deepEqual(await response.json(), {
     username: "alice",
     name: "Alice Smith",
-    avatar: null,
     bio: null,
   });
 });

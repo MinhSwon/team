@@ -109,12 +109,16 @@ export function trustedProxyList(
     return [];
   }
 
-  const values = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  const values = raw.split(",").map((value) => value.trim());
   const invalid = values.filter((value) => {
-    const [address, prefix] = value.split("/");
+    if (!value) return true;
+    const parts = value.split("/");
+    if (parts.length > 2) return true;
+    const [address, prefix] = parts;
     const family = isIP(address ?? "");
     if (!family) return true;
     if (prefix === undefined) return false;
+    if (!/^\d+$/.test(prefix)) return true;
     const bits = Number(prefix);
     return !Number.isInteger(bits) || bits < 0 || bits > (family === 4 ? 32 : 128);
   });

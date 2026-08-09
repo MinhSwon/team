@@ -28,7 +28,6 @@ export type FriendUser = {
   id: string;
   username: string;
   name: string;
-  image: string | null;
 };
 
 export type FriendListItem = {
@@ -96,7 +95,6 @@ const friendUserSelect = {
   id: true,
   username: true,
   name: true,
-  image: true,
 } as const;
 
 export async function getFriendLists(userId: string): Promise<FriendLists> {

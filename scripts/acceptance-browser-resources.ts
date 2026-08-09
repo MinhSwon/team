@@ -14,7 +14,7 @@ export async function closeBrowserResources({
 }) {
   const failures: unknown[] = [];
   const contextResults = await Promise.allSettled(
-    contexts.map((context) => context.close()),
+    contexts.map((context) => Promise.resolve().then(() => context.close())),
   );
   failures.push(
     ...contextResults
@@ -23,7 +23,7 @@ export async function closeBrowserResources({
   );
 
   const finalResults = await Promise.allSettled([
-    browser?.close(),
+    Promise.resolve().then(() => browser?.close()),
     prisma
       ? (async () => {
           try {

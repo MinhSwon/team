@@ -28,7 +28,6 @@ type ActorSummary = {
   id: string;
   name: string;
   username: string;
-  image: string | null;
 };
 
 type NewInteractionNotification = {
@@ -257,7 +256,6 @@ const notificationInclude = {
       id: true,
       name: true,
       username: true,
-      image: true,
     },
   },
   post: {

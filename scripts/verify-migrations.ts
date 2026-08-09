@@ -20,6 +20,9 @@ const schemas = [
   `migration_legacy_${randomUUID().replaceAll("-", "")}`,
   `migration_blob_supported_${randomUUID().replaceAll("-", "")}`,
   `migration_blob_unsupported_${randomUUID().replaceAll("-", "")}`,
+  `migration_blob_matrix_${randomUUID().replaceAll("-", "")}`,
+  `migration_blob_hardening_reject_${randomUUID().replaceAll("-", "")}`,
+  `migration_blob_readiness_${randomUUID().replaceAll("-", "")}`,
 ];
 const privateEnumMigration = readFileSync(
   "prisma/migrations/20260809010000_private_blob_lifecycle_enum/migration.sql",
@@ -27,6 +30,10 @@ const privateEnumMigration = readFileSync(
 );
 const privateMediaMigration = readFileSync(
   "prisma/migrations/20260809011000_private_blob_media/migration.sql",
+  "utf8",
+);
+const privateHardeningMigration = readFileSync(
+  "prisma/migrations/20260809012000_private_blob_hardening/migration.sql",
   "utf8",
 );
 const prePrivateMigrations = [
@@ -38,6 +45,13 @@ const prePrivateMigrations = [
 function schemaUrl(schema: string) {
   const url = new URL(configuredDatabaseUrl);
   url.searchParams.set("schema", schema);
+  return url.toString();
+}
+
+function runtimeSchemaUrl(schema: string) {
+  const url = new URL(configuredDatabaseUrl);
+  url.searchParams.delete("schema");
+  url.searchParams.set("options", `-c search_path=${schema}`);
   return url.toString();
 }
 
@@ -82,6 +96,15 @@ async function applyPrePrivateMigrations(schema: string) {
 }
 
 async function applyPrivateMigration(client: PoolClient) {
+  await client.query(
+    "SET placedecide.legacy_blob_store_hosts = 'store.private.blob.vercel-storage.com,store.public.blob.vercel-storage.com'",
+  );
+  await client.query(privateEnumMigration);
+  await client.query(privateMediaMigration);
+  await client.query(privateHardeningMigration);
+}
+
+async function applyPrivateMediaMigrations(client: PoolClient) {
   await client.query(
     "SET placedecide.legacy_blob_store_hosts = 'store.private.blob.vercel-storage.com,store.public.blob.vercel-storage.com'",
   );
@@ -333,6 +356,204 @@ async function main() {
       );
     } finally {
       unsupported.release();
+    }
+
+    await applyPrePrivateMigrations(schemas[4]);
+    const matrix = await schemaClient(schemas[4]);
+    try {
+      const fixtures = [];
+      for (const suffix of [
+        "pending-copy",
+        "converting-before",
+        "converting-after",
+        "pending-delete",
+      ]) {
+        fixtures.push(
+          await insertImageFixture(
+            matrix,
+            suffix,
+            `https://store.public.blob.vercel-storage.com/places/${suffix}.png`,
+          ),
+        );
+      }
+      await applyPrivateMediaMigrations(matrix);
+      await matrix.query(
+        `UPDATE "User" SET "image" = 'https://images.example/avatar.png'
+          WHERE "id" = $1`,
+        [fixtures[0].userId],
+      );
+      await matrix.query(
+        `UPDATE "BlobUpload" blob
+            SET "lifecycle" = CASE image."id"
+                  WHEN 'image-pending-copy' THEN 'PENDING_PRIVATE_COPY'::"BlobLifecycle"
+                  WHEN 'image-converting-before' THEN 'CONVERTING'::"BlobLifecycle"
+                  WHEN 'image-converting-after' THEN 'CONVERTING'::"BlobLifecycle"
+                  ELSE 'PENDING_PUBLIC_DELETE'::"BlobLifecycle"
+                END,
+                "url" = CASE
+                  WHEN image."id" IN ('image-converting-after', 'image-pending-delete')
+                    THEN 'https://store.private.blob.vercel-storage.com/private/' || image."id" || '.png'
+                  ELSE NULL
+                END,
+                "contentType" = CASE
+                  WHEN image."id" IN ('image-converting-after', 'image-pending-delete')
+                    THEN 'image/png'
+                  ELSE NULL
+                END,
+                "leaseUntil" = CASE
+                  WHEN image."id" LIKE 'image-converting-%'
+                    THEN CURRENT_TIMESTAMP + interval '5 minutes'
+                  ELSE NULL
+                END
+           FROM "SavedPlaceImage" image
+          WHERE image."blobUploadId" = blob."id"`,
+      );
+      const before = await matrix.query(
+        `SELECT "id", "url", "sourceUrl", "pathname", "contentType",
+                "lifecycle"::text AS "lifecycle", "leaseUntil", "lastError"
+           FROM "BlobUpload"
+          ORDER BY "id"`,
+      );
+      await matrix.query(privateHardeningMigration);
+      const after = await matrix.query(
+        `SELECT "id", "url", "sourceUrl", "pathname", "contentType",
+                "lifecycle"::text AS "lifecycle", "leaseUntil", "lastError"
+           FROM "BlobUpload"
+          ORDER BY "id"`,
+      );
+      assert.deepEqual(after.rows, before.rows);
+      assert.equal(
+        (
+          await matrix.query<{ image: string | null }>(
+            `SELECT "image" FROM "User" WHERE "id" = $1`,
+            [fixtures[0].userId],
+          )
+        ).rows[0]?.image,
+        null,
+      );
+      console.log(
+        "PASS prior private Blob states preserve public references",
+      );
+    } finally {
+      matrix.release();
+    }
+
+    await applyPrePrivateMigrations(schemas[5]);
+    const hardeningReject = await schemaClient(schemas[5]);
+    try {
+      const foreignSource = await insertImageFixture(
+        hardeningReject,
+        "foreign-source",
+        "https://store.public.blob.vercel-storage.com/foreign-source.png",
+      );
+      const foreignUrl = await insertImageFixture(
+        hardeningReject,
+        "foreign-url",
+        "https://store.public.blob.vercel-storage.com/foreign-url.png",
+      );
+      const ambiguous = await insertImageFixture(
+        hardeningReject,
+        "ambiguous",
+        "https://store.public.blob.vercel-storage.com/ambiguous.png",
+      );
+      await applyPrivateMediaMigrations(hardeningReject);
+      await hardeningReject.query(
+        `UPDATE "BlobUpload" blob
+            SET "sourceUrl" = CASE image."id"
+                  WHEN 'image-foreign-source'
+                    THEN 'https://foreign.public.blob.vercel-storage.com/source.png'
+                  ELSE blob."sourceUrl"
+                END,
+                "url" = CASE image."id"
+                  WHEN 'image-foreign-url'
+                    THEN 'https://foreign.private.blob.vercel-storage.com/private.png'
+                  ELSE blob."url"
+                END,
+                "lifecycle" = CASE image."id"
+                  WHEN 'image-foreign-url' THEN 'CONVERTING'::"BlobLifecycle"
+                  WHEN 'image-ambiguous' THEN 'CLAIMED'::"BlobLifecycle"
+                  ELSE blob."lifecycle"
+                END
+           FROM "SavedPlaceImage" image
+          WHERE image."blobUploadId" = blob."id"`,
+      );
+      await hardeningReject.query(
+        `UPDATE "User" SET "image" = 'https://images.example/avatar.png'
+          WHERE "id" = $1`,
+        [foreignSource.userId],
+      );
+      const before = await hardeningReject.query(
+        `SELECT "id", "url", "sourceUrl", "lifecycle"::text AS "lifecycle"
+           FROM "BlobUpload"
+          ORDER BY "id"`,
+      );
+      await assert.rejects(
+        hardeningReject.query(privateHardeningMigration),
+        /Foreign or ambiguous BlobUpload/,
+      );
+      assert.deepEqual(
+        (
+          await hardeningReject.query(
+            `SELECT "id", "url", "sourceUrl", "lifecycle"::text AS "lifecycle"
+               FROM "BlobUpload"
+              ORDER BY "id"`,
+          )
+        ).rows,
+        before.rows,
+      );
+      assert.equal(
+        (
+          await hardeningReject.query<{ image: string | null }>(
+            `SELECT "image" FROM "User" WHERE "id" = $1`,
+            [foreignSource.userId],
+          )
+        ).rows[0]?.image,
+        "https://images.example/avatar.png",
+      );
+      assert.ok(foreignUrl && ambiguous);
+      console.log(
+        "PASS hardening rejects foreign and ambiguous prior Blob states before mutation",
+      );
+    } finally {
+      hardeningReject.release();
+    }
+
+    await applyPrePrivateMigrations(schemas[6]);
+    const readiness = await schemaClient(schemas[6]);
+    try {
+      await insertImageFixture(
+        readiness,
+        "readiness",
+        "https://store.public.blob.vercel-storage.com/readiness.png",
+      );
+      await applyPrivateMediaMigrations(readiness);
+      await readiness.query(
+        `UPDATE "BlobUpload"
+            SET "url" = 'https://store.private.blob.vercel-storage.com/private/readiness.png',
+                "lifecycle" = 'CLAIMED',
+                "lastError" = 'public delete failed'
+          WHERE "sourceUrl" IS NOT NULL`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        ["node_modules/tsx/dist/cli.mjs", "scripts/verify-blob-conversion.ts"],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: { ...process.env, DATABASE_URL: runtimeSchemaUrl(schemas[6]) },
+        },
+      );
+      assert.notEqual(
+        result.status,
+        0,
+        `readiness accepted a surviving public reference\n${result.stdout}\n${result.stderr}`,
+      );
+      assert.match(`${result.stdout}\n${result.stderr}`, /incomplete/i);
+      console.log(
+        "PASS Blob readiness rejects surviving public references",
+      );
+    } finally {
+      readiness.release();
     }
   } finally {
     for (const schema of schemas) {

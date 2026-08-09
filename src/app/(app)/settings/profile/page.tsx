@@ -20,7 +20,6 @@ export default async function ProfileSettingsPage() {
           profile={{
             username: currentUser.username,
             name: currentUser.name,
-            avatar: currentUser.image,
             bio: currentUser.bio,
           }}
         />

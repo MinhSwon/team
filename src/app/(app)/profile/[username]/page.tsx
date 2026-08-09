@@ -37,21 +37,12 @@ export default async function ProfilePage({
       <Navigation />
       <main className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
         <section className="flex items-start gap-4 border-b border-slate-800 pb-7">
-          {profile.avatar ? (
-            <span
-              aria-label={`${profile.name} avatar`}
-              className="h-20 w-20 shrink-0 rounded-full bg-cover bg-center ring-1 ring-slate-700"
-              role="img"
-              style={{ backgroundImage: `url("${profile.avatar}")` }}
-            />
-          ) : (
-            <span
-              aria-hidden="true"
-              className="grid h-20 w-20 shrink-0 place-items-center rounded-full bg-slate-800 text-xl font-bold text-amber-400"
-            >
-              {initials(profile.name, profile.username)}
-            </span>
-          )}
+          <span
+            aria-hidden="true"
+            className="grid h-20 w-20 shrink-0 place-items-center rounded-full bg-slate-800 text-xl font-bold text-amber-400"
+          >
+            {initials(profile.name, profile.username)}
+          </span>
 
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-3">

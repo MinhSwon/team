@@ -1357,13 +1357,55 @@ test("browser acceptance cleanup surrounds database and browser setup", async ()
     },
     freshEmail: "setup-failed@example.com",
   } as never);
-  assert.deepEqual(events, [
-    "context-1",
-    "context-2",
-    "browser",
-    "fresh-user",
-    "prisma",
+  assert.deepEqual(events.slice(0, 2), ["context-1", "context-2"]);
+  assert.ok(events.indexOf("browser") > 1);
+  assert.ok(events.indexOf("fresh-user") > 1);
+  assert.ok(events.indexOf("prisma") > events.indexOf("fresh-user"));
+});
+
+test("browser acceptance cleanup survives synchronous resource failures", async () => {
+  const { closeBrowserResources } = await import(
+    "../../scripts/acceptance-browser-resources"
+  );
+  const events: string[] = [];
+
+  await assert.rejects(
+    closeBrowserResources({
+      contexts: [
+        {
+          close: () => {
+            events.push("context-failed");
+            throw new Error("context close failed");
+          },
+        },
+        { close: async () => void events.push("context-closed") },
+      ],
+      browser: {
+        close: () => {
+          events.push("browser-failed");
+          throw new Error("browser close failed");
+        },
+      },
+      prisma: {
+        user: {
+          deleteMany: async () => {
+            events.push("fresh-user");
+            return { count: 1 };
+          },
+        },
+        $disconnect: async () => void events.push("prisma"),
+      },
+      freshEmail: "setup-failed@example.com",
+    } as never),
+    AggregateError,
+  );
+  assert.deepEqual(events.slice(0, 2), [
+    "context-failed",
+    "context-closed",
   ]);
+  assert.ok(events.indexOf("browser-failed") > 1);
+  assert.ok(events.indexOf("fresh-user") > 1);
+  assert.ok(events.indexOf("prisma") > events.indexOf("fresh-user"));
 });
 
 test("profile avatar updates reject external URLs and UI keeps initials fallback", async () => {
@@ -1417,4 +1459,208 @@ test("place parser rejects invalid Maps URLs at the trust boundary", async () =>
       }),
     /Invalid place input/,
   );
+});
+
+test("private Blob hardening migration preserves prior conversion references", () => {
+  const hardening = source(
+    "prisma/migrations/20260809012000_private_blob_hardening/migration.sql",
+  );
+  const verifier = source("scripts/verify-migrations.ts");
+  const readiness = source("scripts/verify-blob-conversion.ts");
+
+  assert.match(hardening, /blob\."url"/);
+  assert.match(hardening, /blob\."sourceUrl"/);
+  assert.match(hardening, /PENDING_PRIVATE_COPY/);
+  assert.match(hardening, /CONVERTING/);
+  assert.match(hardening, /PENDING_PUBLIC_DELETE/);
+  assert.doesNotMatch(
+    hardening,
+    /SET[\s\S]*"sourceUrl"\s*=\s*blob\."url"[\s\S]*"url"\s*=\s*NULL/,
+  );
+  assert.match(hardening, /UPDATE "User"[\s\S]*"image"\s*=\s*NULL/);
+  assert.match(verifier, /PASS prior private Blob states preserve public references/);
+  assert.match(verifier, /PASS Blob readiness rejects surviving public references/);
+  assert.match(readiness, /sourceUrl/);
+  assert.match(readiness, /public\\+\.blob\\+\.vercel-storage\\+\.com/);
+});
+
+test("auth signup sanitizes name and image before database creation", () => {
+  const auth = source("src/lib/auth.ts");
+  const acceptance = source("scripts/acceptance-social.ts");
+  const migration = source(
+    "prisma/migrations/20260809012000_private_blob_hardening/migration.sql",
+  );
+
+  assert.match(auth, /const name\s*=\s*user\.name\.trim\(\)/);
+  assert.match(auth, /name\.length\s*>\s*80/);
+  assert.match(auth, /image:\s*null/);
+  assert.match(acceptance, /\/api\/auth\/sign-up\/email/);
+  assert.match(acceptance, /image:\s*"https:\/\/images\.example/);
+  assert.match(acceptance, /image:\s*null/);
+  assert.match(migration, /UPDATE "User"[\s\S]*"image"\s*=\s*NULL/);
+
+  for (const path of [
+    "src/lib/profiles.ts",
+    "src/lib/friendships.ts",
+    "src/lib/interactions.ts",
+    "src/lib/posts.ts",
+    "src/app/api/users/search/route.ts",
+    "src/app/api/posts/[id]/comments/route.ts",
+  ]) {
+    assert.doesNotMatch(source(path), /image:\s*true/, path);
+  }
+});
+
+test("legacy conversion uses bounded sequential batches", async () => {
+  const blobs = await import("./blob-uploads");
+  let claimedTake = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const leaseUntil = new Date("2026-08-09T12:05:00.000Z");
+  const candidates = Array.from({ length: 6 }, (_, index) => ({
+    id: `candidate-${index}`,
+    ownerId: "user-1",
+    url: null,
+    sourceUrl:
+      `https://owned.public.blob.vercel-storage.com/old-${index}.png`,
+    pathname: `places/user-1/legacy/old-${index}.png`,
+    lifecycle: "CONVERTING" as const,
+    leaseUntil,
+    contentType: null,
+  }));
+
+  const result = await blobs.convertLegacyBlobUploads({
+    now: new Date("2026-08-09T12:00:00.000Z"),
+    allowedHosts: ["owned.public.blob.vercel-storage.com"],
+    store: {
+      claimConversionCandidates: async (_now, _lease, take) => {
+        claimedTake = take;
+        return candidates.slice(0, take);
+      },
+      recordPrivateCopy: async () => true,
+      finishConversion: async () => true,
+      releaseConversionClaim: async () => {},
+    },
+    get: async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return {
+        statusCode: 200,
+        stream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new Uint8Array([
+                0x89,
+                0x50,
+                0x4e,
+                0x47,
+                0x0d,
+                0x0a,
+                0x1a,
+                0x0a,
+              ]),
+            );
+            controller.close();
+          },
+        }),
+        blob: { contentType: "image/png", size: 8 },
+      };
+    },
+    put: async (pathname) => ({
+      url: `https://owned.private.blob.vercel-storage.com/${pathname}`,
+      pathname,
+    }),
+    del: async () => {},
+    token: "blob-token",
+  });
+
+  assert.ok(claimedTake <= 4);
+  assert.equal(maximumActive, 1);
+  assert.deepEqual(result, { converted: claimedTake, failed: 0 });
+});
+
+test("acceptance rejects non-review untracked files and completes cleanup after stop failure", async () => {
+  const acceptance = await import("../../scripts/acceptance-server") as typeof import("../../scripts/acceptance-server") & {
+    assertAcceptanceSourceState?: (
+      trackedStatus: string,
+      untrackedPaths: readonly string[],
+    ) => void;
+    cleanupFreshServerResources?: (input: {
+      stopServer: () => Promise<void>;
+      removeBuild: () => Promise<void>;
+      restoreEnvironment: () => void;
+      assertCommit: () => void;
+      assertSourceClean: () => void;
+    }) => Promise<void>;
+  };
+
+  assert.equal(typeof acceptance.assertAcceptanceSourceState, "function");
+  acceptance.assertAcceptanceSourceState?.("", [
+    ".superpowers/sdd/final-review-package.md",
+  ]);
+  assert.throws(
+    () => acceptance.assertAcceptanceSourceState?.("", ["src/runtime.ts"]),
+    /untracked/i,
+  );
+  assert.throws(
+    () => acceptance.assertAcceptanceSourceState?.("", [".env.local"]),
+    /untracked/i,
+  );
+
+  assert.equal(typeof acceptance.cleanupFreshServerResources, "function");
+  const events: string[] = [];
+  await assert.rejects(
+    acceptance.cleanupFreshServerResources?.({
+      stopServer: () => {
+        events.push("stop");
+        throw new Error("stop failed");
+      },
+      removeBuild: async () => {
+        events.push("remove");
+      },
+      restoreEnvironment: () => {
+        events.push("restore");
+      },
+      assertCommit: () => {
+        events.push("commit");
+      },
+      assertSourceClean: () => {
+        events.push("clean");
+      },
+    }),
+    AggregateError,
+  );
+  assert.deepEqual(events, ["stop", "remove", "restore", "commit", "clean"]);
+});
+
+test("deployment docs state proxy topology and multipart body-limit requirements", () => {
+  const readme = source("README.md");
+  const packageJson = source("package.json");
+  assert.match(packageJson, /check:deployment/);
+  assert.equal(
+    existsSync(new URL("../../scripts/check-deployment.ts", import.meta.url)),
+    true,
+  );
+  assert.match(readme, /origin isolation/i);
+  assert.match(readme, /authenticated client IP header|trusted proxy chain/i);
+  assert.match(readme, /direct[- ]peer|direct origin/i);
+  assert.match(readme, /request body limit/i);
+  assert.match(readme, /missing or chunked `?Content-Length`?/i);
+});
+
+test("unreleased migration repair is explicit and refuses ambiguous databases", () => {
+  const packageJson = source("package.json");
+  assert.match(packageJson, /repair:unreleased-migrations/);
+  assert.equal(
+    existsSync(new URL("../../scripts/repair-unreleased-migrations.ts", import.meta.url)),
+    true,
+  );
+  const repair = source("scripts/repair-unreleased-migrations.ts");
+  assert.match(repair, /ALLOW_UNRELEASED_MIGRATION_REPAIR/);
+  assert.match(repair, /NODE_ENV[\s\S]*production/);
+  assert.match(repair, /SavedPlaceImage/);
+  assert.match(repair, /checksum/);
+  assert.match(repair, /pre-release|unreleased/i);
 });

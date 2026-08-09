@@ -29,6 +29,8 @@ export type SavedImageInput = {
   caption: string | null;
 };
 
+export const MAX_IMAGE_CAPTION_LENGTH = 300;
+
 export type SavePlaceInput = {
   place: PlaceInput;
   rating: number | null;
@@ -69,7 +71,6 @@ type AuthorSummary = {
   id: string;
   name: string;
   username: string;
-  image: string | null;
 };
 
 export type FeedPost = Post & {
@@ -250,6 +251,16 @@ function image(value: unknown): SavedImageInput {
   ) {
     throw new PostError("Invalid saved image", "INVALID_INPUT", 400);
   }
+  if (
+    typeof item.caption === "string" &&
+    item.caption.length > MAX_IMAGE_CAPTION_LENGTH
+  ) {
+    throw new PostError(
+      `Image caption must be ${MAX_IMAGE_CAPTION_LENGTH} characters or fewer`,
+      "INVALID_INPUT",
+      400,
+    );
+  }
 
   return {
     uploadId: item.uploadId.trim(),
@@ -334,7 +345,6 @@ const authorSelect = {
   id: true,
   name: true,
   username: true,
-  image: true,
 } as const;
 
 function visiblePostAuthors(userId: string): Prisma.PostWhereInput[] {

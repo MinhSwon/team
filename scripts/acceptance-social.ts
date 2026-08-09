@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 
 import type { AcceptanceClient } from "./acceptance-support";
 import { withFreshProductionServer } from "./acceptance-server";
@@ -67,8 +68,38 @@ async function runSocialAcceptance(appUrl: string) {
     bob: new CookieClient(appUrl, acceptanceIp),
     carol: new CookieClient(appUrl, acceptanceIp),
   };
+  const signupId = randomUUID().replaceAll("-", "");
+  const signupEmail = `auth-sanitize-${signupId}@example.com`;
 
   try {
+    const signup = await new CookieClient(appUrl, acceptanceIp).request(
+      "/api/auth/sign-up/email",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "  Direct Auth User  ",
+          email: signupEmail,
+          password: "acceptance-password",
+          username: `auth.${signupId.slice(0, 20)}`,
+          image: "https://images.example/direct-auth.png",
+        }),
+      },
+    );
+    assert.equal(
+      signup.status,
+      200,
+      `direct sign-up failed: ${JSON.stringify(signup.body)}`,
+    );
+    assert.deepEqual(
+      await prisma.user.findUnique({
+        where: { email: signupEmail },
+        select: { name: true, image: true },
+      }),
+      { name: "Direct Auth User", image: null },
+    );
+    console.log("Direct auth signup sanitation: PASS");
+
     await Promise.all(
       demoUsers.map((user, index) =>
         login(
@@ -81,7 +112,11 @@ async function runSocialAcceptance(appUrl: string) {
     console.log(`Application: ${appUrl}`);
     await runAcceptance(prisma, clients);
   } finally {
-    await prisma.$disconnect();
+    try {
+      await prisma.user.deleteMany({ where: { email: signupEmail } });
+    } finally {
+      await prisma.$disconnect();
+    }
   }
 }
 

@@ -102,6 +102,25 @@ test("handleUpload reports missing Blob configuration clearly", async () => {
   });
 });
 
+test("handleUpload rejects oversized multipart bodies before parsing form data", async () => {
+  const response = await handleUpload(
+    new Request("http://localhost/api/uploads", {
+      method: "POST",
+      headers: {
+        "Content-Type": "multipart/form-data; boundary=unused",
+        "Content-Length": String(5 * 1024 * 1024 + 256 * 1024 + 1),
+      },
+      body: "not parsed",
+    }),
+    dependencies(),
+  );
+
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), {
+    error: "Upload request is too large",
+  });
+});
+
 test("handleUpload rejects unsupported and oversized files", async () => {
   const unsupported = await handleUpload(
     requestWith(new File(["gif"], "place.gif", { type: "image/gif" })),

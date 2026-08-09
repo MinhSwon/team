@@ -61,11 +61,17 @@ export const auth = betterAuth({
     user: {
       create: {
         before: async (user) => {
+          const name = user.name.trim();
           const username =
             typeof user.username === "string"
               ? normalizeUsername(user.username)
               : "";
 
+          if (!name || name.length > 80) {
+            throw new APIError("BAD_REQUEST", {
+              message: "Name must be 1-80 characters",
+            });
+          }
           if (!usernamePattern.test(username)) {
             throw new APIError("BAD_REQUEST", {
               message:
@@ -76,7 +82,9 @@ export const auth = betterAuth({
           return {
             data: {
               ...user,
+              name,
               username,
+              image: null,
             },
           };
         },

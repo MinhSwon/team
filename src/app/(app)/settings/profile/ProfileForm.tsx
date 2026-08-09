@@ -7,7 +7,6 @@ import { FormEvent, useState } from "react";
 type Profile = {
   username: string;
   name: string;
-  avatar: string | null;
   bio: string | null;
 };
 
@@ -77,9 +76,7 @@ export default function ProfileForm({ profile }: { profile: Profile }) {
   return (
     <form
       className="space-y-5"
-      key={[profile.name, profile.username, profile.bio, profile.avatar].join(
-        "\0",
-      )}
+      key={[profile.name, profile.username, profile.bio].join("\0")}
       onSubmit={submit}
     >
       <label className="block text-sm font-medium text-slate-200">

@@ -31,7 +31,11 @@ BLOB_READ_WRITE_TOKEN=
   comma-separated, in production. Invalid or missing production values fail
   startup. Test/development may leave it empty; Better Auth disables IP
   tracking there instead of using one global fallback bucket. Forwarded IP
-  headers are ignored unless this setting is present.
+  headers are ignored unless this setting is present. Production must enforce
+  origin isolation so clients cannot reach the application directly, or use a
+  platform-authenticated client IP header through the complete trusted proxy
+  chain. This application cannot verify network topology; direct-origin access
+  can spoof forwarded headers and bypass IP dimensions.
 - `LEGACY_BLOB_STORE_HOSTS` lists exact owned public/private Blob hostnames,
   comma-separated. Migration rejects missing or foreign hosts.
 - `GOOGLE_MAPS_API_KEY` is optional. Without it, place search and resolution
@@ -55,6 +59,19 @@ Apply committed migrations:
 ```powershell
 npx prisma migrate deploy
 ```
+
+This branch is pre-release. Its private Blob migrations may be corrected in
+place before merge. A development database that applied prior checksums must
+have zero `BlobUpload` and `SavedPlaceImage` rows, then run:
+
+```powershell
+$env:ALLOW_UNRELEASED_MIGRATION_REPAIR="1"
+npm run repair:unreleased-migrations
+```
+
+Repair refuses production, unknown checksums, partial histories, and any
+database where erased public references would need guessing. Recreate that
+development database instead.
 
 Baselining guidance applies only to databases already exactly matching the
 social schema. See `prisma/migrations/README.md`.
@@ -83,6 +100,15 @@ resolution:
 
 Limited responses return HTTP 429 and `Retry-After`.
 
+Validate production environment syntax before deployment:
+
+```powershell
+npm run check:deployment
+```
+
+This check validates configuration, not origin isolation or direct-peer
+network policy.
+
 Prune expired PostgreSQL buckets periodically:
 
 ```powershell
@@ -101,7 +127,8 @@ images enter `PENDING_DELETE`; unclaimed uploads older than 24 hours are also
 eligible. Existing supported public Vercel Blob images enter
 `PENDING_PRIVATE_COPY`, are copied to deterministic private paths, then have
 their public source deleted. Cleanup workers use leased claims so overlapping
-workers do not process one object concurrently.
+workers do not process one object concurrently. Legacy conversion claims at
+most four rows and processes them sequentially, bounding buffered image memory.
 
 Both public and private legacy images stay inaccessible in
 `PENDING_PRIVATE_COPY` until worker validates JPEG, PNG, or WebP magic bytes
@@ -125,7 +152,19 @@ npm run verify:blob-conversion
 ```
 
 `npm run build` and `npm start` refuse readiness while conversion or failed
-conversion rows remain. Provider deletion failures remain queued for retry.
+conversion rows, any surviving `sourceUrl`, or public Blob URL remains.
+Provider deletion failures remain queued for retry.
+
+Media proxy reads pass a 30-second `AbortSignal` to the installed Blob SDK and
+stream without buffering. SDK controls whether cancellation propagates after
+initial response headers, so deployment response timeouts remain required.
+
+Upload route rejects declared multipart bodies above 5 MiB plus 256 KiB
+overhead before `formData()`. Production proxy/platform request body limit is
+mandatory for missing or chunked `Content-Length`; application does not add a
+streaming multipart parser.
+
+Saved-place image captions are limited to 300 characters at server boundary.
 
 ## Verification
 

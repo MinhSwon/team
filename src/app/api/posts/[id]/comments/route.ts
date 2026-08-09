@@ -17,7 +17,6 @@ type CommentRouteDependencies = {
     id: string;
     name?: string;
     username?: string;
-    image?: string | null;
   }>;
   createPostComment: typeof createPostComment;
   rateLimit?: (request: Request, userId: string) => Promise<void>;
@@ -67,7 +66,6 @@ export async function handleCommentPost(
           id: currentUser.id,
           name: currentUser.name ?? "You",
           username: currentUser.username ?? "you",
-          image: currentUser.image ?? null,
         },
       },
     });

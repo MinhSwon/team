@@ -46,8 +46,28 @@ function currentCommit(): string {
   return result.stdout.trim();
 }
 
+export function assertAcceptanceSourceState(
+  trackedStatus: string,
+  untrackedPaths: readonly string[],
+) {
+  assert.equal(
+    trackedStatus.trim(),
+    "",
+    `Acceptance requires clean tracked source\n${trackedStatus}`,
+  );
+  const unexpected = untrackedPaths.filter(
+    (path) =>
+      !path.replaceAll("\\", "/").startsWith(".superpowers/sdd/"),
+  );
+  assert.deepEqual(
+    unexpected,
+    [],
+    `Acceptance rejects untracked runtime/source/config files: ${unexpected.join(", ")}`,
+  );
+}
+
 function assertTrackedSourceClean() {
-  const result = spawnSync(
+  const tracked = spawnSync(
     "git",
     ["status", "--porcelain", "--untracked-files=no"],
     {
@@ -56,14 +76,26 @@ function assertTrackedSourceClean() {
     },
   );
   assert.equal(
-    result.status,
+    tracked.status,
     0,
-    `git status failed\n${result.stdout}\n${result.stderr}`,
+    `git status failed\n${tracked.stdout}\n${tracked.stderr}`,
+  );
+  const untracked = spawnSync(
+    "git",
+    ["ls-files", "--others", "--exclude-standard", "-z"],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    },
   );
   assert.equal(
-    result.stdout.trim(),
-    "",
-    `Acceptance requires clean tracked source\n${result.stdout}`,
+    untracked.status,
+    0,
+    `git ls-files failed\n${untracked.stdout}\n${untracked.stderr}`,
+  );
+  assertAcceptanceSourceState(
+    tracked.stdout,
+    untracked.stdout.split("\0").filter(Boolean),
   );
 }
 
@@ -144,6 +176,46 @@ async function stopServer(child: ChildProcess) {
     );
     child.kill("SIGKILL");
     await killed;
+  }
+}
+
+export async function cleanupFreshServerResources({
+  stopServer,
+  removeBuild,
+  restoreEnvironment,
+  assertCommit,
+  assertSourceClean,
+}: {
+  stopServer: () => Promise<void>;
+  removeBuild: () => Promise<void>;
+  restoreEnvironment: () => void;
+  assertCommit: () => void;
+  assertSourceClean: () => void;
+}) {
+  const failures: unknown[] = [];
+  for (const result of await Promise.allSettled([
+    Promise.resolve().then(stopServer),
+  ])) {
+    if (result.status === "rejected") failures.push(result.reason);
+  }
+  for (const result of await Promise.allSettled([
+    Promise.resolve().then(removeBuild),
+  ])) {
+    if (result.status === "rejected") failures.push(result.reason);
+  }
+  try {
+    restoreEnvironment();
+  } catch (error) {
+    failures.push(error);
+  }
+  for (const result of await Promise.allSettled([
+    Promise.resolve().then(assertCommit),
+    Promise.resolve().then(assertSourceClean),
+  ])) {
+    if (result.status === "rejected") failures.push(result.reason);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Acceptance server cleanup failed");
   }
 }
 
@@ -229,20 +301,25 @@ export async function withFreshProductionServer<T>(
       port,
     });
   } finally {
-    if (child) await stopServer(child);
-    await rm(distPath, { recursive: true, force: true });
-    assert.equal(
-      currentCommit(),
-      sourceCommit,
-      "Source commit changed during acceptance",
-    );
-    assertTrackedSourceClean();
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
+    await cleanupFreshServerResources({
+      stopServer: () => (child ? stopServer(child) : Promise.resolve()),
+      removeBuild: () => rm(distPath, { recursive: true, force: true }),
+      restoreEnvironment: () => {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+      },
+      assertCommit: () =>
+        assert.equal(
+          currentCommit(),
+          sourceCommit,
+          "Source commit changed during acceptance",
+        ),
+      assertSourceClean: assertTrackedSourceClean,
+    });
   }
 }

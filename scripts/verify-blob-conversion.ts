@@ -8,23 +8,25 @@ async function main() {
   const { prisma } = await import("../src/lib/db");
 
   try {
-    const pending = await prisma.blobUpload.findMany({
-      where: {
-        lifecycle: {
-          in: [
-            "PENDING_PRIVATE_COPY",
-            "CONVERTING",
-            "PENDING_PUBLIC_DELETE",
-          ],
-        },
-      },
-      select: {
-        id: true,
-        lifecycle: true,
-        lastError: true,
-      },
-      take: 20,
-    });
+    const pending = await prisma.$queryRawUnsafe<
+      Array<{
+        id: string;
+        lifecycle: string;
+        lastError: string | null;
+      }>
+    >(
+      `SELECT "id", "lifecycle"::text AS "lifecycle", "lastError"
+         FROM "BlobUpload"
+        WHERE "lifecycle" IN (
+                'PENDING_PRIVATE_COPY',
+                'CONVERTING',
+                'PENDING_PUBLIC_DELETE'
+              )
+           OR "sourceUrl" IS NOT NULL
+           OR "url" ~* '^https://[^/]+\\.public\\.blob\\.vercel-storage\\.com/'
+        ORDER BY "createdAt", "id"
+        LIMIT 20`,
+    );
 
     if (pending.length > 0) {
       throw new Error(

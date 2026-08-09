@@ -13,6 +13,8 @@
     "verify:migrations": "tsx scripts/verify-migrations.ts",
     "verify:blob-conversion": "tsx scripts/verify-blob-conversion.ts",
     "verify:races": "tsx scripts/verify-races.ts",
+    "check:deployment": "tsx scripts/check-deployment.ts",
+    "repair:unreleased-migrations": "tsx scripts/repair-unreleased-migrations.ts",
     "cleanup:blobs": "tsx scripts/cleanup-blobs.ts",
     "cleanup:rate-limits": "tsx scripts/cleanup-rate-limits.ts",
     "acceptance:social": "tsx scripts/acceptance-social.ts",

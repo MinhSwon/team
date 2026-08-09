@@ -81,6 +81,33 @@ test("proxy IP headers require explicit trusted-proxy configuration", async () =
   );
 });
 
+test("trusted proxy parser rejects malformed IP and CIDR entries", async () => {
+  const { trustedProxyList } = await import("./rate-limit");
+
+  for (const value of [
+    "127.0.0.1/",
+    "127.0.0.1//32",
+    "127.0.0.1/33",
+    "127.0.0.1/not-a-prefix",
+    "999.0.0.1",
+    "::1/",
+    "::1/129",
+    "/24",
+    "127.0.0.1,",
+    ",127.0.0.1",
+  ]) {
+    assert.throws(
+      () =>
+        trustedProxyList({
+          NODE_ENV: "production",
+          TRUSTED_PROXY_IPS: value,
+        }),
+      /TRUSTED_PROXY_IPS/,
+      value,
+    );
+  }
+});
+
 test("expired PostgreSQL rate-limit buckets are pruned", async () => {
   const rateLimits = await import("./rate-limit");
   assert.equal(

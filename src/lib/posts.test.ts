@@ -536,7 +536,6 @@ class FakePostsPersistence implements PostsPersistence {
             username:
               this.users.get(savedPlace.userId)?.username ??
               savedPlace.userId,
-            image: this.users.get(savedPlace.userId)?.image ?? null,
           },
           images: [],
         })),
@@ -568,7 +567,6 @@ class FakePostsPersistence implements PostsPersistence {
         id: author.id,
         name: author.name,
         username: author.username,
-        image: author.image,
       },
       savedPlace: {
         ...structuredClone(savedPlace),
@@ -602,7 +600,6 @@ class FakePostsPersistence implements PostsPersistence {
             id: commentAuthor.id,
             name: commentAuthor.name,
             username: commentAuthor.username,
-            image: commentAuthor.image,
           },
         };
       }),
@@ -1299,6 +1296,26 @@ test("save payload accepts upload IDs and rejects client-supplied Blob URLs", ()
         ],
       }),
     PostError,
+  );
+});
+
+test("save payload limits image captions to 300 characters", () => {
+  assert.doesNotThrow(() =>
+    parseSavePlaceInput({
+      ...saveInput,
+      images: [{ uploadId: "upload-1", caption: "c".repeat(300) }],
+    }),
+  );
+  assert.throws(
+    () =>
+      parseSavePlaceInput({
+        ...saveInput,
+        images: [{ uploadId: "upload-1", caption: "c".repeat(301) }],
+      }),
+    (error: unknown) =>
+      error instanceof PostError &&
+      error.code === "INVALID_INPUT" &&
+      error.status === 400,
   );
 });
 

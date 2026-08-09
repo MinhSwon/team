@@ -20,21 +20,18 @@ class FakeProfilePersistence implements ProfilePersistence {
       id: "user-a",
       username: "alice",
       name: "Alice",
-      image: null,
       bio: "Coffee and quiet rooms.",
     },
     {
       id: "user-b",
       username: "bob",
       name: "Bob",
-      image: "https://images.example/bob.jpg",
       bio: null,
     },
     {
       id: "user-c",
       username: "carol",
       name: "Carol",
-      image: null,
       bio: null,
     },
   ];
@@ -150,7 +147,6 @@ test("profile update uses session user, normalizes fields, and checks exact user
   assert.deepEqual(updated, {
     username: "alice.smith",
     name: "Alice Smith",
-    avatar: null,
     bio: "New bio",
   });
   assert.equal(persistence.users[0]?.id, "user-a");

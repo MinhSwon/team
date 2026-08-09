@@ -343,7 +343,6 @@ class FakeInteractionPersistence implements InteractionPersistence {
           id: notification.actorId,
           name: notification.actorId,
           username: notification.actorId,
-          image: null,
         },
         post: notification.postId
           ? { id: notification.postId, placeId: "place-1", placeName: "Cafe Central" }
@@ -898,7 +897,6 @@ test("PostCard renders interactive controls and existing inline comments", () =>
       id: "user-b",
       name: "User B",
       username: "user-b",
-      image: null,
     },
     savedPlace: {
       id: "saved-post-1",
@@ -940,7 +938,6 @@ test("PostCard renders interactive controls and existing inline comments", () =>
           id: "user-a",
           name: "User A",
           username: "user-a",
-          image: null,
         },
       },
     ],
