@@ -1083,9 +1083,21 @@ test("saved image deletion uses one atomic lifecycle transition", () => {
   assert.match(transition, /\$executeRaw/);
   assert.match(
     transition,
-    /CASE\s+WHEN\s+"lifecycle"\s*=\s*'CONVERTING'\s+THEN\s+"leaseUntil"\s+ELSE\s+NULL\s+END/,
+    /CASE\s+WHEN\s+"lifecycle"\s+IN\s*\(\s*'CONVERTING',\s*'PENDING_DELETE'\s*\)\s+THEN\s+"leaseUntil"\s+ELSE\s+NULL\s+END/,
   );
   assert.doesNotMatch(transition, /blobUpload\.updateMany/);
+});
+
+test("saved place deletion locks owned parent before image enumeration", () => {
+  const posts = source("src/lib/posts.ts");
+  const start = posts.indexOf("deleteSavedPlace: async");
+  const end = posts.indexOf("\n    },", start);
+  const deletion = posts.slice(start, end);
+
+  assert.match(
+    deletion,
+    /SELECT\s+"id"\s+FROM\s+"UserSavedPlace"[\s\S]*"id"\s*=\s*\$\{id\}[\s\S]*"userId"\s*=\s*\$\{userId\}[\s\S]*FOR UPDATE[\s\S]*markImagesPendingDelete/,
+  );
 });
 
 test("Blob conversion and provider cleanup use bounded abort signals", () => {

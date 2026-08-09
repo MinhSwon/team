@@ -63,6 +63,23 @@ async function waitForBlockedBlobUpdate(pool: Pool) {
   assert.fail("Timed out waiting for blocked BlobUpload update");
 }
 
+async function waitForBlockedTransactions(pool: Pool, count: number) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ blocked: number }>(
+      `SELECT count(*)::int AS blocked
+         FROM pg_stat_activity
+        WHERE application_name = $1
+          AND state = 'active'
+          AND wait_event_type = 'Lock'`,
+      [RACE_APPLICATION],
+    );
+    if ((result.rows[0]?.blocked ?? 0) >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`Timed out waiting for ${count} blocked transactions`);
+}
+
 async function installDelayTrigger(
   prisma: {
     $executeRawUnsafe(query: string): Promise<number>;
@@ -113,7 +130,9 @@ async function childMain() {
   const { cleanupBlobUploads, convertLegacyBlobUploads } = await import(
     "../src/lib/blob-uploads"
   );
-  const { deleteSavedPlace } = await import("../src/lib/posts");
+  const { deleteSavedPlace, updateSavedPlace } = await import(
+    "../src/lib/posts"
+  );
 
   const ownerId = `race-owner-${randomUUID()}`;
   const viewerId = `race-viewer-${randomUUID()}`;
@@ -600,6 +619,188 @@ async function childMain() {
     }
   }
 
+  async function verifyBlobUpdateDeleteParentLock() {
+    const updatePlaceId = `race-update-place-${randomUUID()}`;
+    const updateSavedPlaceId = `race-update-saved-${randomUUID()}`;
+    const oldBlobId = `race-update-000-old-${randomUUID()}`;
+    const leasedBlobId = `race-update-mmm-leased-${randomUUID()}`;
+    const replacementBlobId = `race-update-zzz-replacement-${randomUUID()}`;
+    const oldUrl =
+      "https://owned.private.blob.vercel-storage.com/update-old.png";
+    const leasedUrl =
+      "https://owned.private.blob.vercel-storage.com/update-leased.png";
+    const replacementUrl =
+      "https://owned.private.blob.vercel-storage.com/update-replacement.png";
+    const retainedLease = new Date(Date.now() + 5 * 60 * 1000);
+
+    await prisma.place.create({
+      data: {
+        id: updatePlaceId,
+        name: "Blob Update Delete Race Place",
+        normalizedName: "blob update delete race place",
+        address: "4 Race Way",
+        normalizedAddress: "4 race way",
+      },
+    });
+    await prisma.userSavedPlace.create({
+      data: {
+        id: updateSavedPlaceId,
+        userId: ownerId,
+        placeId: updatePlaceId,
+        tags: [],
+      },
+    });
+    await prisma.blobUpload.create({
+      data: {
+        id: oldBlobId,
+        ownerId,
+        url: oldUrl,
+        pathname: `places/${ownerId}/update-old.png`,
+        lifecycle: "CLAIMED",
+      },
+    });
+    await prisma.blobUpload.create({
+      data: {
+        id: leasedBlobId,
+        ownerId,
+        url: leasedUrl,
+        pathname: `places/${ownerId}/update-leased.png`,
+        lifecycle: "PENDING_DELETE",
+        leaseUntil: retainedLease,
+      },
+    });
+    await prisma.blobUpload.create({
+      data: {
+        id: replacementBlobId,
+        ownerId,
+        url: replacementUrl,
+        pathname: `places/${ownerId}/update-replacement.png`,
+        lifecycle: "UPLOADED",
+      },
+    });
+    await prisma.savedPlaceImage.createMany({
+      data: [
+        {
+          id: `race-update-image-old-${randomUUID()}`,
+          savedPlaceId: updateSavedPlaceId,
+          blobUploadId: oldBlobId,
+          url: `/api/media/${oldBlobId}`,
+          sortOrder: 0,
+        },
+        {
+          id: `race-update-image-leased-${randomUUID()}`,
+          savedPlaceId: updateSavedPlaceId,
+          blobUploadId: leasedBlobId,
+          url: `/api/media/${leasedBlobId}`,
+          sortOrder: 1,
+        },
+      ],
+    });
+
+    const blocker = await monitor.connect();
+    await blocker.query("BEGIN");
+    await blocker.query(
+      `SELECT 1 FROM "BlobUpload" WHERE "id" = $1 FOR UPDATE`,
+      [oldBlobId],
+    );
+    let blockerOpen = true;
+    const update = updateSavedPlace(ownerId, updateSavedPlaceId, {
+      review: "Replacement committed before delete",
+      images: [{ uploadId: replacementBlobId, caption: null }],
+    });
+    let deletion: Promise<void> | undefined;
+
+    try {
+      await waitForBlockedBlobUpdate(monitor);
+      deletion = deleteSavedPlace(ownerId, updateSavedPlaceId);
+      await waitForBlockedTransactions(monitor, 2);
+
+      await blocker.query("COMMIT");
+      blockerOpen = false;
+      const [updateResult, deleteResult] = await Promise.allSettled([
+        update,
+        deletion,
+      ]);
+      assert.equal(updateResult.status, "fulfilled");
+      assert.equal(deleteResult.status, "fulfilled");
+
+      assert.equal(
+        await prisma.userSavedPlace.count({
+          where: { id: updateSavedPlaceId },
+        }),
+        0,
+      );
+      assert.equal(
+        await prisma.savedPlaceImage.count({
+          where: { savedPlaceId: updateSavedPlaceId },
+        }),
+        0,
+      );
+      assert.deepEqual(
+        await prisma.blobUpload.findMany({
+          where: {
+            id: { in: [oldBlobId, leasedBlobId, replacementBlobId] },
+          },
+          select: { id: true, lifecycle: true, leaseUntil: true },
+          orderBy: { id: "asc" },
+        }),
+        [
+          { id: oldBlobId, lifecycle: "PENDING_DELETE", leaseUntil: null },
+          {
+            id: leasedBlobId,
+            lifecycle: "PENDING_DELETE",
+            leaseUntil: retainedLease,
+          },
+          {
+            id: replacementBlobId,
+            lifecycle: "PENDING_DELETE",
+            leaseUntil: null,
+          },
+        ],
+      );
+
+      const earlyDeletes: string[] = [];
+      assert.deepEqual(
+        await cleanupBlobUploads({
+          now: new Date(retainedLease.getTime() - 1),
+          del: async (reference) => void earlyDeletes.push(reference),
+        }),
+        { deleted: 2, failed: 0 },
+      );
+      assert.deepEqual(
+        new Set(earlyDeletes),
+        new Set([oldUrl, replacementUrl]),
+      );
+      assert.equal(
+        await prisma.blobUpload.count({ where: { id: leasedBlobId } }),
+        1,
+      );
+
+      const lateDeletes: string[] = [];
+      assert.deepEqual(
+        await cleanupBlobUploads({
+          now: new Date(retainedLease.getTime() + 1),
+          del: async (reference) => void lateDeletes.push(reference),
+        }),
+        { deleted: 1, failed: 0 },
+      );
+      assert.deepEqual(lateDeletes, [leasedUrl]);
+      assert.equal(
+        await prisma.blobUpload.count({
+          where: { id: { in: [oldBlobId, leasedBlobId, replacementBlobId] } },
+        }),
+        0,
+      );
+      console.log(
+        "PASS Blob update/delete race: parent-first locking covers replacement and retains leased delete intent",
+      );
+    } finally {
+      if (blockerOpen) await blocker.query("ROLLBACK");
+      blocker.release();
+      await Promise.allSettled([update, ...(deletion ? [deletion] : [])]);
+    }
+  }
+
   try {
     await verifyScenario(
       "PostLike",
@@ -618,6 +819,7 @@ async function childMain() {
     );
     await verifyBlobConversionDeleteRace();
     await verifyBlobClaimDeleteBoundary();
+    await verifyBlobUpdateDeleteParentLock();
   } finally {
     await monitor.end();
     await prisma.$disconnect();

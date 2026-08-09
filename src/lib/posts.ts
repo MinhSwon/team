@@ -458,6 +458,7 @@ function prismaStore(
     | "post"
     | "savedPlaceImage"
     | "$executeRaw"
+    | "$queryRaw"
   >,
 ): PostWriteStore {
   async function claimImages(
@@ -510,7 +511,8 @@ function prismaStore(
         UPDATE "BlobUpload"
            SET "lifecycle" = 'PENDING_DELETE',
                "leaseUntil" = CASE
-                 WHEN "lifecycle" = 'CONVERTING' THEN "leaseUntil"
+                 WHEN "lifecycle" IN ('CONVERTING', 'PENDING_DELETE')
+                   THEN "leaseUntil"
                  ELSE NULL
                END,
                "updatedAt" = CURRENT_TIMESTAMP
@@ -605,6 +607,13 @@ function prismaStore(
       return savedPlace;
     },
     deleteSavedPlace: async (id, userId) => {
+      await client.$queryRaw(Prisma.sql`
+        SELECT "id"
+          FROM "UserSavedPlace"
+         WHERE "id" = ${id}
+           AND "userId" = ${userId}
+         FOR UPDATE
+      `);
       await markImagesPendingDelete(id);
       await client.userSavedPlace.delete({ where: { id, userId } });
     },
