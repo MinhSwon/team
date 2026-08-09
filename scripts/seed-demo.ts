@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import { loadEnvFile } from "node:process";
 
 async function main() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Demo seed is disabled in production");
+  }
+  if (process.env.ALLOW_DEMO_SEED !== "1") {
+    throw new Error("Set ALLOW_DEMO_SEED=1 to run demo seed");
+  }
+
   loadEnvFile();
   const [
     { auth },

@@ -1,9 +1,18 @@
-import { put } from "@vercel/blob";
+import { del, put } from "@vercel/blob";
 
+import {
+  recordUploadedBlob,
+  type UploadedBlob,
+} from "@/lib/blob-uploads";
 import {
   requireCurrentUser,
   UnauthorizedError,
 } from "@/lib/current-user";
+import {
+  enforceRateLimit,
+  RateLimitError,
+  rateLimitResponse,
+} from "@/lib/rate-limit";
 
 export type UploadPut = (
   pathname: string,
@@ -14,11 +23,17 @@ export type UploadPut = (
     contentType: string;
     token: string;
   },
-) => Promise<{ url: string }>;
+) => Promise<{ url: string; pathname: string }>;
 
 export type UploadDependencies = {
   requireUser: () => Promise<{ id: string }>;
   put: UploadPut;
+  recordUpload: (
+    ownerId: string,
+    blob: { url: string; pathname: string },
+  ) => Promise<UploadedBlob>;
+  del: (url: string) => Promise<void>;
+  rateLimit: (request: Request, userId: string) => Promise<void>;
   token?: string;
 };
 
@@ -36,14 +51,28 @@ function isImageType(type: string): type is ImageType {
 
 function hasImageSignature(type: ImageType, bytes: Uint8Array): boolean {
   if (type === "image/jpeg") {
-    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    return (
+      bytes.length >= 3 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[2] === 0xff
+    );
   }
   if (type === "image/png") {
-    return [
-      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    ].every((byte, index) => bytes[index] === byte);
+    return (
+      bytes.length >= 8 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
+    );
   }
   return (
+    bytes.length >= 12 &&
     bytes[0] === 0x52 &&
     bytes[1] === 0x49 &&
     bytes[2] === 0x46 &&
@@ -75,10 +104,12 @@ export async function handleUpload(
   let currentUser: { id: string };
   try {
     currentUser = await dependencies.requireUser();
+    await dependencies.rateLimit(request, currentUser.id);
   } catch (error) {
     if (error instanceof UnauthorizedError) {
       return Response.json({ error: error.message }, { status: 401 });
     }
+    if (error instanceof RateLimitError) return rateLimitResponse(error);
     return Response.json({ error: "Image upload failed" }, { status: 502 });
   }
 
@@ -144,7 +175,15 @@ export async function handleUpload(
       },
     );
 
-    return Response.json({ url: blob.url }, { status: 201 });
+    try {
+      const upload = await dependencies.recordUpload(currentUser.id, blob);
+      return Response.json(upload, { status: 201 });
+    } catch {
+      try {
+        await dependencies.del(blob.url);
+      } catch {}
+      return Response.json({ error: "Image upload failed" }, { status: 502 });
+    }
   } catch {
     return Response.json({ error: "Image upload failed" }, { status: 502 });
   }
@@ -154,6 +193,10 @@ export function POST(request: Request): Promise<Response> {
   return handleUpload(request, {
     requireUser: requireCurrentUser,
     put: (pathname, body, options) => put(pathname, body, options),
+    recordUpload: recordUploadedBlob,
+    del: (url) => del(url, { token: process.env.BLOB_READ_WRITE_TOKEN }),
+    rateLimit: (nextRequest, userId) =>
+      enforceRateLimit(nextRequest, userId, "upload"),
     token: process.env.BLOB_READ_WRITE_TOKEN,
   });
 }

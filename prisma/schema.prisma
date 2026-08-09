@@ -19,6 +19,18 @@ enum NotificationType {
   POST_COMMENTED
 }
 
+enum SavedPlaceStatus {
+  SAVED
+  WANT_TO_GO
+  VISITED
+}
+
+enum BlobLifecycle {
+  UPLOADED
+  CLAIMED
+  PENDING_DELETE
+}
+
 model User {
   id            String           @id
   name          String
@@ -39,6 +51,7 @@ model User {
   comments      Comment[]
   notifications Notification[]   @relation("NotificationRecipient")
   actions       Notification[]   @relation("NotificationActor")
+  blobUploads   BlobUpload[]
 }
 
 model Session {
@@ -125,6 +138,7 @@ model UserSavedPlace {
   review       String?
   tags         String[]
   sourcePostId String?
+  status       SavedPlaceStatus  @default(SAVED)
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
   user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -140,12 +154,38 @@ model UserSavedPlace {
 model SavedPlaceImage {
   id           String         @id @default(uuid())
   savedPlaceId String
+  blobUploadId String?        @unique
   url          String
   caption      String?
   sortOrder    Int            @default(0)
   savedPlace   UserSavedPlace @relation(fields: [savedPlaceId], references: [id], onDelete: Cascade)
+  blobUpload   BlobUpload?    @relation(fields: [blobUploadId], references: [id], onDelete: SetNull)
 
   @@index([savedPlaceId, sortOrder])
+}
+
+model BlobUpload {
+  id        String           @id @default(uuid())
+  ownerId   String
+  url       String           @unique
+  pathname  String           @unique
+  lifecycle BlobLifecycle    @default(UPLOADED)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  owner     User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  image     SavedPlaceImage?
+
+  @@index([ownerId, lifecycle])
+  @@index([lifecycle, createdAt])
+}
+
+model RateLimitBucket {
+  key       String   @id
+  count     Int
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
 }
 
 model Post {

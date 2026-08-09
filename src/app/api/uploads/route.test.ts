@@ -46,7 +46,16 @@ function dependencies(
   return {
     requireUser: async () => ({ id: "user-1" }),
     token: "blob-token",
-    put: async () => ({ url: "https://blob.example/image.png" }),
+    put: async () => ({
+      url: "https://blob.example/image.png",
+      pathname: "places/user-1/image.png",
+    }),
+    recordUpload: async (_ownerId, blob) => ({
+      id: "upload-1",
+      url: blob.url,
+    }),
+    del: async () => {},
+    rateLimit: async () => {},
     ...overrides,
   };
 }
@@ -55,7 +64,10 @@ test("handleUpload authenticates before accepting an image", async () => {
   let putCalls = 0;
   const put: UploadPut = async () => {
     putCalls += 1;
-    return { url: "https://blob.example/image.png" };
+    return {
+      url: "https://blob.example/image.png",
+      pathname: "places/user-1/image.png",
+    };
   };
 
   const response = await handleUpload(
@@ -109,7 +121,10 @@ test("handleUpload rejects files whose bytes do not match the declared image typ
     dependencies({
       put: async () => {
         putCalls += 1;
-        return { url: "https://blob.example/image.png" };
+        return {
+          url: "https://blob.example/image.png",
+          pathname: "places/user-1/image.png",
+        };
       },
     }),
   );
@@ -142,7 +157,10 @@ test("handleUpload stores one allowed image under the current user", async () =>
     assert.ok(body instanceof File);
     assert.equal(options.access, "public");
     assert.equal(options.addRandomSuffix, true);
-    return { url: "https://blob.example/place.webp" };
+    return {
+      url: "https://blob.example/place.webp",
+      pathname: "places/user-1/place.webp",
+    };
   };
 
   const response = await handleUpload(
@@ -155,6 +173,7 @@ test("handleUpload stores one allowed image under the current user", async () =>
   assert.equal(contentType, "image/webp");
   assert.equal(token, "blob-token");
   assert.deepEqual(await response.json(), {
+    id: "upload-1",
     url: "https://blob.example/place.webp",
   });
 });
@@ -200,4 +219,26 @@ test("handleUpload reports Blob TypeError as provider failure", async () => {
   assert.deepEqual(await response.json(), {
     error: "Image upload failed",
   });
+});
+
+test("handleUpload deletes Blob when ownership persistence fails", async () => {
+  const deleted: string[] = [];
+  const response = await handleUpload(
+    requestWith(imageFile("image/png")),
+    dependencies({
+      put: async () => ({
+        url: "https://blob.example/orphan.png",
+        pathname: "places/user-1/orphan.png",
+      }),
+      recordUpload: async () => {
+        throw new Error("database unavailable");
+      },
+      del: async (url) => {
+        deleted.push(url);
+      },
+    }),
+  );
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(deleted, ["https://blob.example/orphan.png"]);
 });

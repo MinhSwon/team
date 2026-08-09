@@ -7,9 +7,12 @@
     "build": "prisma generate && next build",
     "postinstall": "prisma generate",
     "start": "next start",
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "tsx --import ./scripts/test-env.ts --test \"src/**/*.test.ts\"",
     "lint": "eslint",
     "seed:demo": "tsx scripts/seed-demo.ts",
+    "verify:migrations": "tsx scripts/verify-migrations.ts",
+    "verify:races": "tsx scripts/verify-races.ts",
+    "cleanup:blobs": "tsx scripts/cleanup-blobs.ts",
     "acceptance:social": "tsx scripts/acceptance-social.ts",
     "acceptance:browser": "tsx scripts/acceptance-browser.ts"
   },

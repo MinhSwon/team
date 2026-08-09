@@ -1,6 +1,47 @@
 -- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "public";
 
+DO $$
+DECLARE
+  legacy_tables text;
+BEGIN
+  SELECT string_agg(table_name, ', ' ORDER BY table_name)
+  INTO legacy_tables
+  FROM information_schema.tables
+  WHERE table_schema = current_schema()
+    AND table_type = 'BASE TABLE'
+    AND table_name IN (
+      'users',
+      'user_preferences',
+      'groups',
+      'group_memberships',
+      'place_categories',
+      'place_tags',
+      'places',
+      'place_tag_mappings',
+      'place_images',
+      'opening_hours',
+      'user_saved_places',
+      'group_saved_places',
+      'collections',
+      'collection_places',
+      'interactions',
+      'visits',
+      'import_batches',
+      'import_candidates',
+      'recommendation_sessions',
+      'activity_events'
+    );
+
+  IF legacy_tables IS NOT NULL THEN
+    RAISE EXCEPTION
+      'PlaceDecide social baseline is fresh-install-only; legacy mapped tables detected in schema %: %. In-place legacy upgrade is unsupported. Use a new database and explicit export/import plan.',
+      current_schema(),
+      legacy_tables;
+  END IF;
+END
+$$;
+
 -- CreateEnum
 CREATE TYPE "FriendshipStatus" AS ENUM ('PENDING', 'ACCEPTED', 'REJECTED');
 
