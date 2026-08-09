@@ -1074,6 +1074,20 @@ test("race verifier covers leased conversion deletion through cleanup", () => {
   assert.match(races, /PASS Blob conversion\/delete race/);
 });
 
+test("saved image deletion uses one atomic lifecycle transition", () => {
+  const posts = source("src/lib/posts.ts");
+  const start = posts.indexOf("async function markImagesPendingDelete");
+  const end = posts.indexOf("\n  return {", start);
+  const transition = posts.slice(start, end);
+
+  assert.match(transition, /\$executeRaw/);
+  assert.match(
+    transition,
+    /CASE\s+WHEN\s+"lifecycle"\s*=\s*'CONVERTING'\s+THEN\s+"leaseUntil"\s+ELSE\s+NULL\s+END/,
+  );
+  assert.doesNotMatch(transition, /blobUpload\.updateMany/);
+});
+
 test("Blob conversion and provider cleanup use bounded abort signals", () => {
   const blobs = source("src/lib/blob-uploads.ts");
   const uploads = source("src/app/api/uploads/route.ts");

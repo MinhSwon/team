@@ -1,10 +1,10 @@
-import type {
-  Place,
-  Post,
+import {
   Prisma,
-  SavedPlaceImage,
-  SavedPlaceStatus,
-  UserSavedPlace,
+  type Place,
+  type Post,
+  type SavedPlaceImage,
+  type SavedPlaceStatus,
+  type UserSavedPlace,
 } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
@@ -457,6 +457,7 @@ function prismaStore(
     | "userSavedPlace"
     | "post"
     | "savedPlaceImage"
+    | "$executeRaw"
   >,
 ): PostWriteStore {
   async function claimImages(
@@ -505,27 +506,24 @@ function prismaStore(
     });
     const uploadIds = images.map(({ blobUploadId }) => blobUploadId);
     if (uploadIds.length > 0) {
-      await client.blobUpload.updateMany({
-        where: {
-          id: { in: uploadIds },
-          lifecycle: "CONVERTING",
-        },
-        data: { lifecycle: "PENDING_DELETE" },
-      });
-      await client.blobUpload.updateMany({
-        where: {
-          id: { in: uploadIds },
-          lifecycle: {
-            in: [
-              "UPLOADED",
-              "CLAIMED",
-              "PENDING_PRIVATE_COPY",
-              "PENDING_PUBLIC_DELETE",
-            ],
-          },
-        },
-        data: { lifecycle: "PENDING_DELETE", leaseUntil: null },
-      });
+      await client.$executeRaw(Prisma.sql`
+        UPDATE "BlobUpload"
+           SET "lifecycle" = 'PENDING_DELETE',
+               "leaseUntil" = CASE
+                 WHEN "lifecycle" = 'CONVERTING' THEN "leaseUntil"
+                 ELSE NULL
+               END,
+               "updatedAt" = CURRENT_TIMESTAMP
+         WHERE "id" IN (${Prisma.join(uploadIds)})
+           AND "lifecycle" IN (
+             'UPLOADED',
+             'CLAIMED',
+             'PENDING_PRIVATE_COPY',
+             'CONVERTING',
+             'PENDING_PUBLIC_DELETE',
+             'PENDING_DELETE'
+           )
+      `);
     }
   }
 

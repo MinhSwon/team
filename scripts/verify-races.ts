@@ -43,6 +43,26 @@ async function waitForWrite(
   assert.fail(`Timed out waiting for ${table} write`);
 }
 
+async function waitForBlockedBlobUpdate(pool: Pool) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ blocked: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE application_name = $1
+            AND state = 'active'
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%BlobUpload%'
+       ) AS blocked`,
+      [RACE_APPLICATION],
+    );
+    if (result.rows[0]?.blocked) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail("Timed out waiting for blocked BlobUpload update");
+}
+
 async function installDelayTrigger(
   prisma: {
     $executeRawUnsafe(query: string): Promise<number>;
@@ -373,6 +393,213 @@ async function childMain() {
     );
   }
 
+  async function verifyBlobClaimDeleteBoundary() {
+    const claimPlaceId = `race-claim-place-${randomUUID()}`;
+    const claimSavedPlaceId = `race-claim-saved-${randomUUID()}`;
+    const blockerBlobId = `race-claim-000-blocker-${randomUUID()}`;
+    const targetBlobId = `race-claim-zzz-target-${randomUUID()}`;
+    const sourceUrl =
+      "https://owned.public.blob.vercel-storage.com/race-claim.png";
+    const pathname = `places/${ownerId}/legacy/race-claim.png`;
+    const privateUrl =
+      `https://owned.private.blob.vercel-storage.com/${pathname}`;
+    const conversionNow = new Date();
+    const conversionLease = new Date(
+      conversionNow.getTime() + 5 * 60 * 1000,
+    );
+
+    await prisma.place.create({
+      data: {
+        id: claimPlaceId,
+        name: "Blob Claim Race Place",
+        normalizedName: "blob claim race place",
+        address: "3 Race Way",
+        normalizedAddress: "3 race way",
+      },
+    });
+    await prisma.userSavedPlace.create({
+      data: {
+        id: claimSavedPlaceId,
+        userId: ownerId,
+        placeId: claimPlaceId,
+        tags: [],
+      },
+    });
+    await prisma.blobUpload.create({
+      data: {
+        id: blockerBlobId,
+        ownerId,
+        url: "https://owned.private.blob.vercel-storage.com/blocker.png",
+        pathname: `places/${ownerId}/blocker.png`,
+        lifecycle: "CLAIMED",
+      },
+    });
+    await prisma.blobUpload.create({
+      data: {
+        id: targetBlobId,
+        ownerId,
+        sourceUrl,
+        pathname,
+        lifecycle: "PENDING_PRIVATE_COPY",
+      },
+    });
+    await prisma.savedPlaceImage.createMany({
+      data: [
+        {
+          id: `race-claim-image-000-${randomUUID()}`,
+          savedPlaceId: claimSavedPlaceId,
+          blobUploadId: blockerBlobId,
+          url: `/api/media/${blockerBlobId}`,
+          sortOrder: 0,
+        },
+        {
+          id: `race-claim-image-zzz-${randomUUID()}`,
+          savedPlaceId: claimSavedPlaceId,
+          blobUploadId: targetBlobId,
+          url: `/api/media/${targetBlobId}`,
+          sortOrder: 1,
+        },
+      ],
+    });
+
+    const blocker = await monitor.connect();
+    await blocker.query("BEGIN");
+    await blocker.query(
+      `SELECT 1 FROM "BlobUpload" WHERE "id" = $1 FOR UPDATE`,
+      [blockerBlobId],
+    );
+    let blockerOpen = true;
+    let signalPutStarted = () => {};
+    const putStarted = new Promise<void>((resolve) => {
+      signalPutStarted = resolve;
+    });
+    let releasePut = () => {};
+    const putBlocked = new Promise<void>((resolve) => {
+      releasePut = resolve;
+    });
+    let conversion: Promise<{ converted: number; failed: number }> | undefined;
+    const deletion = deleteSavedPlace(ownerId, claimSavedPlaceId);
+
+    try {
+      await waitForBlockedBlobUpdate(monitor);
+      assert.equal(
+        (
+          await prisma.blobUpload.findUniqueOrThrow({
+            where: { id: targetBlobId },
+            select: { lifecycle: true },
+          })
+        ).lifecycle,
+        "PENDING_PRIVATE_COPY",
+        "delete must block before touching claim target",
+      );
+
+      conversion = convertLegacyBlobUploads({
+        now: conversionNow,
+        allowedHosts: ["owned.public.blob.vercel-storage.com"],
+        get: async () => ({
+          statusCode: 200,
+          stream: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                new Uint8Array([
+                  0x89,
+                  0x50,
+                  0x4e,
+                  0x47,
+                  0x0d,
+                  0x0a,
+                  0x1a,
+                  0x0a,
+                ]),
+              );
+              controller.close();
+            },
+          }),
+          blob: { contentType: "image/png", size: 8 },
+        }),
+        put: async () => {
+          signalPutStarted();
+          await putBlocked;
+          return { url: privateUrl, pathname };
+        },
+        del: async () => {},
+        token: "mock-token",
+      });
+
+      await putStarted;
+      assert.deepEqual(
+        await prisma.blobUpload.findUnique({
+          where: { id: targetBlobId },
+          select: { lifecycle: true, leaseUntil: true },
+        }),
+        { lifecycle: "CONVERTING", leaseUntil: conversionLease },
+      );
+
+      await blocker.query("COMMIT");
+      blockerOpen = false;
+      await deletion;
+      releasePut();
+
+      assert.deepEqual(await conversion, { converted: 0, failed: 1 });
+      assert.deepEqual(
+        await prisma.blobUpload.findUnique({
+          where: { id: targetBlobId },
+          select: {
+            lifecycle: true,
+            leaseUntil: true,
+            url: true,
+            sourceUrl: true,
+            pathname: true,
+          },
+        }),
+        {
+          lifecycle: "PENDING_DELETE",
+          leaseUntil: conversionLease,
+          url: privateUrl,
+          sourceUrl,
+          pathname,
+        },
+      );
+      assert.equal(
+        await prisma.savedPlaceImage.count({
+          where: { blobUploadId: targetBlobId },
+        }),
+        0,
+      );
+
+      const cleanupDeletes: string[] = [];
+      assert.deepEqual(
+        await cleanupBlobUploads({
+          now: new Date(conversionLease.getTime() + 1),
+          del: async (reference) => void cleanupDeletes.push(reference),
+        }),
+        { deleted: 2, failed: 0 },
+      );
+      assert.deepEqual(
+        new Set(cleanupDeletes),
+        new Set([
+          privateUrl,
+          sourceUrl,
+          "https://owned.private.blob.vercel-storage.com/blocker.png",
+        ]),
+      );
+      assert.equal(
+        await prisma.blobUpload.count({
+          where: { id: { in: [blockerBlobId, targetBlobId] } },
+        }),
+        0,
+      );
+      console.log(
+        "PASS Blob claim/delete boundary: atomic delete intent prevents unreferenced CLAIMED conversion",
+      );
+    } finally {
+      releasePut();
+      if (blockerOpen) await blocker.query("ROLLBACK");
+      blocker.release();
+      await Promise.allSettled([deletion, ...(conversion ? [conversion] : [])]);
+    }
+  }
+
   try {
     await verifyScenario(
       "PostLike",
@@ -390,6 +617,7 @@ async function childMain() {
       "POST_COMMENTED",
     );
     await verifyBlobConversionDeleteRace();
+    await verifyBlobClaimDeleteBoundary();
   } finally {
     await monitor.end();
     await prisma.$disconnect();
