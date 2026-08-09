@@ -591,8 +591,6 @@ proves fallback/no-image behavior; automated tests prove private-media
 authorization, hostile legacy rejection, ownership, conversion, timeout,
 cleanup, and race behavior with mocked provider APIs.
 
----
-
 ## Fourth Reviewer Race And Auth Wave
 
 Date: 2026-08-09
@@ -701,3 +699,98 @@ and Vercel Blob success paths remain staging requirements. Local acceptance
 proves fallback/no-image behavior; automated tests prove private-media
 authorization, hostile legacy rejection, ownership, conversion, timeout,
 cleanup, and race behavior with mocked provider APIs.
+
+---
+
+## Final Atomic Blob Transition Blocker
+
+Date: 2026-08-09
+
+Status: **COMPLETE**
+
+Application code HEAD tested:
+`f5958fe7d2eefa00c7953dc4f39764d895bbf8a5`
+
+### Commits
+
+- `f5958fe` `fix blob delete claim race atomically`
+- Evidence commit: `docs: record atomic blob race evidence`
+
+### Finding Closed
+
+- `markImagesPendingDelete` now performs one parameterized PostgreSQL
+  `UPDATE` across referenced `UPLOADED`, `CLAIMED`, `PENDING_PRIVATE_COPY`,
+  `CONVERTING`, `PENDING_PUBLIC_DELETE`, and `PENDING_DELETE` rows.
+- The same statement sets lifecycle to `PENDING_DELETE` and sets
+  `leaseUntil = CASE WHEN lifecycle = 'CONVERTING' THEN leaseUntil ELSE NULL
+  END`.
+- No source URL, private URL, pathname, or trusted MIME column is changed.
+- Prisma domain/mock persistence interfaces remain unchanged. Only local
+  Prisma transaction adapter adds `$executeRaw`.
+- Live proof locks a first image row, blocks delete intent, claims a second
+  `PENDING_PRIVATE_COPY` row for conversion, then releases delete. Atomic
+  predicate recheck moves claimed row to `PENDING_DELETE`; conversion cannot
+  finish `CLAIMED`, and later cleanup deletes both ledger rows.
+
+### TDD Evidence
+
+Recorded RED:
+
+```text
+Focused suite: 46 PASS, 1 FAIL
+Missing one $executeRaw CASE transition
+Live races: first 3 PASS; claim/delete boundary FAIL
+Conversion result: { converted: 1, failed: 0 }
+```
+
+Recorded GREEN:
+
+```text
+Focused suite: 47 PASS, 0 FAIL
+Live PostgreSQL races: 4 PASS, 0 FAIL
+Full suite: 182 PASS, 0 FAIL
+```
+
+### Verification
+
+```text
+npx tsx --import ./scripts/test-env.ts --test "src/lib/final-fix-wave.test.ts"
+  47 PASS, 0 FAIL
+npm run verify:races
+  4 PASS, 0 FAIL
+npm test
+  182 PASS, 0 FAIL, 0 skipped
+npm run lint
+  PASS
+TRUSTED_PROXY_IPS=127.0.0.1/32 npm run build
+  PASS, build sb9qysBw99UvHBGuyNAyT
+npx react-doctor@latest --verbose --scope changed
+  100/100, 96 files, no issues
+npm run acceptance:social
+  12 PASS, 0 FAIL, build YIcA7uHmzCJidMs-RCqlw
+npm run acceptance:browser
+  14 PASS, 0 FAIL, build w6xsIntDf56vcvEJ0oyEE
+Acceptance source commit
+  f5958fe7d2eefa00c7953dc4f39764d895bbf8a5
+Tracked files scanned
+  348
+Tracked artifact or secret/cookie signatures
+  0
+Preserved untracked SDD artifacts
+  22
+```
+
+Source commit totals:
+
+```text
+1 commit
+3 files changed
+267 insertions
+27 deletions
+```
+
+### Remaining Concern
+
+`GOOGLE_MAPS_API_KEY` and `BLOB_READ_WRITE_TOKEN` remain unset. Real provider
+success paths still require staging verification; this blocker affects only
+PostgreSQL lifecycle transition atomicity.
