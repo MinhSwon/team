@@ -794,3 +794,142 @@ Source commit totals:
 `GOOGLE_MAPS_API_KEY` and `BLOB_READ_WRITE_TOKEN` remain unset. Real provider
 success paths still require staging verification; this blocker affects only
 PostgreSQL lifecycle transition atomicity.
+
+---
+
+## Final Parent-Lock Race Blocker
+
+Date: 2026-08-09
+
+Status: **COMPLETE**
+
+Application source HEAD tested:
+`3db9fa54ecb9c0973f6588b72c3188a7ec7aa6ef`
+
+### Commits
+
+- `3db9fa5` `fix saved place update delete blob race`
+- Evidence commit: `docs: record saved place parent lock evidence`
+
+### Root Cause And Fix
+
+- `deleteSavedPlace` enumerated referenced image uploads before locking its
+  parent `UserSavedPlace`.
+- A concurrent update could lock the parent, block while replacing images,
+  commit a replacement `CLAIMED` upload after delete enumeration, then let
+  delete cascade the image relation without marking that replacement upload.
+- The Prisma delete adapter now executes one parameterized owned-parent
+  `SELECT ... FOR UPDATE` before image enumeration and deletion.
+- Update already locks the parent through `userSavedPlace.update`, making
+  lock order explicit and consistent: `UserSavedPlace`, then `BlobUpload`.
+- The existing atomic delete-intent SQL now preserves `leaseUntil` for both
+  `CONVERTING` and already leased `PENDING_DELETE` rows. Repeated delete
+  intent cannot expose an active row to a second cleanup worker.
+- Public behavior is unchanged: missing and unauthorized saved places both
+  return the same opaque HTTP 404.
+
+### Live Interleaving Proof
+
+The new PostgreSQL race fixture:
+
+1. Creates old `CLAIMED`, leased `PENDING_DELETE`, and replacement `UPLOADED`
+   Blob rows for one saved place.
+2. Blocks update on the old Blob after update has locked the parent.
+3. Starts delete and proves it blocks on that parent instead of enumerating
+   stale image IDs.
+4. Releases update, lets replacement claim commit, then lets delete enumerate
+   the committed replacement and mark all referenced uploads for deletion.
+5. Proves early cleanup removes old and replacement uploads but cannot claim
+   the active leased row; late cleanup removes that row after lease expiry.
+
+No unreferenced `CLAIMED` Blob survives.
+
+### TDD Evidence
+
+Recorded RED:
+
+```text
+npx tsx --import ./scripts/test-env.ts --test "src/lib/final-fix-wave.test.ts" "src/lib/posts.test.ts"
+  71 PASS, 2 FAIL
+  Missing owned parent SELECT ... FOR UPDATE before image enumeration.
+  PENDING_DELETE lease was not retained.
+
+npm run verify:races
+  First 4 races PASS.
+  Blob update/delete race FAIL.
+  Actual leased row: leaseUntil null.
+  Replacement upload: lifecycle CLAIMED and unreferenced.
+```
+
+Recorded GREEN:
+
+```text
+npx tsx --import ./scripts/test-env.ts --test "src/lib/final-fix-wave.test.ts" "src/lib/posts.test.ts"
+  73 PASS, 0 FAIL
+
+npm run verify:races
+  5 PASS, 0 FAIL
+  PASS Blob update/delete race: parent-first locking covers replacement and retains leased delete intent
+```
+
+### Verification
+
+```text
+npm test
+  183 PASS, 0 FAIL, 0 skipped
+npm run lint
+  PASS
+TRUSTED_PROXY_IPS=127.0.0.1/32 npm run build
+  PASS by complete fresh artifact set
+  BUILD_ID yOtb7iUqxm8RP2K7rxVFp
+  No active build process remained
+npx react-doctor@latest --verbose --scope changed
+  100/100, 96 files, no issues
+npm run acceptance:social
+  12 PASS, 0 FAIL
+  Fresh build a-ghB0YRV6CuOJRjbf7Bg
+  Commit 3db9fa54ecb9c0973f6588b72c3188a7ec7aa6ef
+  Port 60070
+npm run acceptance:browser
+  14 PASS, 0 FAIL
+  Fresh build lTXA9iLxrkDA5whhO7qAS
+  Commit 3db9fa54ecb9c0973f6588b72c3188a7ec7aa6ef
+  Port 58309
+Combined acceptance
+  26 PASS, 0 FAIL
+Acceptance cleanup
+  .next-acceptance absent
+  No acceptance server/process remains
+Tracked files scanned
+  348
+Tracked artifact paths
+  0
+Provider/private-key signatures
+  0
+App-owned DB URL matches
+  6 expected fixture/documentation references
+Unexpected app-owned DB URL matches
+  0
+Cookie signatures
+  0
+Untracked files outside .superpowers/sdd
+  0
+Preserved untracked SDD artifacts
+  23
+```
+
+Source commit totals:
+
+```text
+1 commit
+3 files changed
+226 insertions
+3 deletions
+```
+
+### Remaining Concern
+
+`GOOGLE_MAPS_API_KEY` and `BLOB_READ_WRITE_TOKEN` are unset. Real Google Places
+and Vercel Blob success paths remain staging requirements. Local acceptance
+proves fallback/no-image workflows; automated tests and live PostgreSQL races
+prove this parent-lock and Blob lifecycle behavior.

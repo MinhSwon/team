@@ -360,3 +360,94 @@ Tracked-file scan:
   conversion/outbox state, cleanup retry, concurrency, and orphan expiry.
 - Staging verification with real scoped Google and Vercel Blob keys remains
   required.
+
+---
+
+## Parent-Locked Saved-Place Delete Race
+
+Date: 2026-08-09
+
+Application source commit:
+`3db9fa54ecb9c0973f6588b72c3188a7ec7aa6ef`
+
+### Finding Closed
+
+- Saved-place deletion now locks the owned `UserSavedPlace` row with one
+  parameterized `SELECT ... FOR UPDATE` before enumerating image uploads.
+- Update and delete therefore share the same lock order:
+  `UserSavedPlace`, then referenced `BlobUpload` rows.
+- The atomic delete-intent update retains `leaseUntil` for both active
+  `CONVERTING` rows and already leased `PENDING_DELETE` rows.
+- Missing and unauthorized deletes retain the existing opaque
+  `Saved place not found` HTTP 404 behavior.
+
+### TDD Evidence
+
+Recorded RED:
+
+```text
+npx tsx --import ./scripts/test-env.ts --test "src/lib/final-fix-wave.test.ts" "src/lib/posts.test.ts"
+  71 PASS, 2 FAIL
+  Missing owned parent SELECT ... FOR UPDATE before image enumeration.
+  PENDING_DELETE lease was not retained.
+
+npm run verify:races
+  First 4 races PASS.
+  Blob update/delete race FAIL.
+  Replacement upload remained CLAIMED and unreferenced.
+  Existing leased PENDING_DELETE upload had leaseUntil cleared.
+```
+
+Recorded GREEN:
+
+```text
+npx tsx --import ./scripts/test-env.ts --test "src/lib/final-fix-wave.test.ts" "src/lib/posts.test.ts"
+  73 PASS, 0 FAIL
+
+npm run verify:races
+  5 PASS, 0 FAIL
+  PASS Blob update/delete race: parent-first locking covers replacement and retains leased delete intent
+```
+
+### Full Verification
+
+```text
+npm test
+  183 PASS, 0 FAIL, 0 skipped
+npm run lint
+  PASS
+TRUSTED_PROXY_IPS=127.0.0.1/32 npm run build
+  Build artifacts complete; BUILD_ID yOtb7iUqxm8RP2K7rxVFp
+npx react-doctor@latest --verbose --scope changed
+  100/100, 96 files, no issues
+npm run acceptance:social
+  12 PASS, 0 FAIL
+  Build a-ghB0YRV6CuOJRjbf7Bg, port 60070
+npm run acceptance:browser
+  14 PASS, 0 FAIL
+  Build lTXA9iLxrkDA5whhO7qAS, port 58309
+Combined acceptance
+  26 PASS, 0 FAIL
+Acceptance source commit
+  3db9fa54ecb9c0973f6588b72c3188a7ec7aa6ef
+```
+
+Both acceptance harnesses built and started isolated production servers from
+the exact source commit. Cleanup removed `.next-acceptance`; no acceptance
+server or build process remained.
+
+Final tracked-file scan:
+
+- `TRACKED_FILES=348`
+- `ARTIFACT_PATHS=0`
+- `PROVIDER_OR_PRIVATE_KEY_SIGNATURES=0`
+- `APP_TRACKED_DB_URL_MATCHES=6`
+- `APP_UNEXPECTED_DB_URL_MATCHES=0`
+- `COOKIE_SIGNATURE_MATCHES=0`
+- `UNTRACKED_OUTSIDE_SDD=0`
+- `PRESERVED_UNTRACKED_SDD=23`
+
+### External-Key Limitation
+
+`GOOGLE_MAPS_API_KEY` and `BLOB_READ_WRITE_TOKEN` remain unset. Real Google
+Places and Vercel Blob success paths still require staging verification.
