@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 
-import { chromium, type Page } from "playwright-core";
+import { chromium, type Locator, type Page } from "playwright-core";
 
 loadEnvFile();
 
@@ -11,6 +11,7 @@ const appUrl = (
   process.env.BETTER_AUTH_URL ??
   "http://localhost:3000"
 ).replace(/\/$/, "");
+const criterionTotal = 14;
 
 function browserPath(): string {
   const local = process.env.LOCALAPPDATA;
@@ -84,6 +85,55 @@ async function waitUntil(
   assert.fail(`Timed out waiting for ${label}`);
 }
 
+async function tabTo(page: Page, target: Locator, label: string) {
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  });
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await page.keyboard.press("Tab");
+    if (await target.evaluate((element) => element === document.activeElement)) {
+      return;
+    }
+  }
+  assert.fail(`Keyboard could not reach ${label}`);
+}
+
+async function assertLayout(page: Page, mobile: boolean) {
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  const metrics = await page.evaluate(() => {
+    const mobileNav = document.querySelector<HTMLElement>(
+      'nav[aria-label="Mobile navigation"]',
+    );
+    const main = document.querySelector<HTMLElement>("main");
+    const last = main?.lastElementChild as HTMLElement | null;
+    const navLabels = mobileNav
+      ? [...mobileNav.querySelectorAll<HTMLElement>("span")]
+      : [];
+    return {
+      viewportWidth: window.innerWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      lastBottom: last?.getBoundingClientRect().bottom ?? 0,
+      navTop: mobileNav?.getBoundingClientRect().top ?? window.innerHeight,
+      labelsFit: navLabels.every(
+        (label) => label.scrollWidth <= label.clientWidth + 1,
+      ),
+    };
+  });
+  assert.ok(
+    metrics.scrollWidth <= metrics.viewportWidth + 1,
+    `horizontal overflow: ${metrics.scrollWidth} > ${metrics.viewportWidth}`,
+  );
+  if (mobile) {
+    assert.ok(
+      metrics.lastBottom <= metrics.navTop + 1,
+      `bottom nav obscures content: ${metrics.lastBottom} > ${metrics.navTop}`,
+    );
+    assert.equal(metrics.labelsFit, true, "mobile navigation labels must wrap");
+  }
+}
+
 async function main() {
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL is required");
   const {
@@ -111,6 +161,7 @@ async function main() {
   let manualPostId: string | undefined;
   let bobSavedId: string | undefined;
   let bobPostId: string | undefined;
+  let searchPlaceId: string | undefined;
 
   async function criterion(
     index: number,
@@ -120,11 +171,11 @@ async function main() {
     try {
       await operation();
       results.push({ name });
-      console.log(`PASS ${index}/12 ${name}`);
+      console.log(`PASS ${index}/${criterionTotal} ${name}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       results.push({ name, error: message });
-      console.error(`FAIL ${index}/12 ${name}: ${message}`);
+      console.error(`FAIL ${index}/${criterionTotal} ${name}: ${message}`);
     }
   }
 
@@ -193,7 +244,7 @@ async function main() {
 
     await criterion(3, "manual UI save creates exactly one post", async () => {
       await alice.goto(`${appUrl}/add`);
-      await alice.getByRole("tab", { name: "Manual" }).click();
+      await alice.getByRole("button", { name: "Manual", exact: true }).click();
       await alice.locator("#manual-name").fill("Acceptance Manual Cafe");
       await alice.locator("#manual-address").fill("1 Acceptance Way");
       await alice.getByRole("button", { name: "Confirm place" }).click();
@@ -229,9 +280,23 @@ async function main() {
       }).click();
       await alice.getByRole("button", { name: "Save and share" }).click();
       await alice.waitForURL(/\/places\//);
+      searchPlaceId = (
+        await prisma.place.findUnique({
+          where: {
+            externalSource_externalPlaceId: {
+              externalSource: "acceptance",
+              externalPlaceId: "search-bistro",
+            },
+          },
+          select: { id: true },
+        })
+      )?.id;
+      assert.ok(searchPlaceId);
 
       await alice.goto(`${appUrl}/add`);
-      await alice.getByRole("tab", { name: "Maps Link" }).click();
+      await alice
+        .getByRole("button", { name: "Maps Link", exact: true })
+        .click();
       await alice
         .locator("#maps-link")
         .fill("https://www.google.com/maps/place/Acceptance+Maps+Cafe");
@@ -270,13 +335,66 @@ async function main() {
           .filter({ hasText: name })
           .waitFor();
       }
+
+      assert.ok(manualPlaceId);
+      await bob.goto(`${appUrl}/add`);
+      await bob.locator("#place-search").fill("Acceptance Manual Cafe");
+      await bob.getByRole("button", { name: "Search places" }).click();
+      await bob
+        .getByRole("button", { name: /Acceptance Manual Cafe/ })
+        .waitFor();
+      assert.equal(
+        (await bob.goto(`${appUrl}/places/${manualPlaceId}`))?.status(),
+        200,
+      );
     });
 
-    await criterion(6, "nonfriend post GET is opaque 404 in page context", async () => {
-      assert.ok(manualPostId);
-      const response = await pageRequest(carol, `/api/posts/${manualPostId}`);
-      assert.equal(response.status, 404);
-      assert.deepEqual(response.body, { error: "Post not found" });
+    await criterion(6, "manual privacy and unauthorized APIs are opaque", async () => {
+      assert.ok(manualPostId && manualPlaceId && manualSavedId);
+
+      for (const state of ["stranger", "pending"] as const) {
+        await carol.goto(`${appUrl}/add`);
+        await carol.locator("#place-search").fill("Acceptance Manual Cafe");
+        await carol.getByRole("button", { name: "Search places" }).click();
+        await carol.getByText("No matches found. Try Manual.").waitFor();
+        assert.equal(
+          (await carol.goto(`${appUrl}/places/${manualPlaceId}`))?.status(),
+          404,
+          state,
+        );
+
+        if (state === "stranger") {
+          await alice.goto(`${appUrl}/friends`);
+          await alice.getByLabel("Search people").fill("demo.carol");
+          await alice
+            .getByRole("button", { name: "Search", exact: true })
+            .click();
+          await alice
+            .getByRole("button", {
+              name: "Send friend request to Demo Carol",
+            })
+            .click();
+          await alice.getByText("Pending", { exact: true }).waitFor();
+        }
+      }
+
+      const post = await pageRequest(carol, `/api/posts/${manualPostId}`);
+      assert.equal(post.status, 404);
+      assert.deepEqual(post.body, { error: "Post not found" });
+
+      const patch = await pageRequest(carol, `/api/saved/${manualSavedId}`, {
+        method: "PATCH",
+        body: { status: "VISITED" },
+      });
+      const remove = await pageRequest(carol, `/api/saved/${manualSavedId}`, {
+        method: "DELETE",
+      });
+      for (const response of [patch, remove]) {
+        assert.equal(response.status, 404);
+        assert.deepEqual(response.body, {
+          error: "Saved place not found",
+        });
+      }
     });
 
     await criterion(7, "friend likes, comments, and resaves through UI", async () => {
@@ -284,7 +402,10 @@ async function main() {
       await bob.goto(`${appUrl}/feed`);
       const post = bob
         .locator("article")
-        .filter({ hasText: "Acceptance Manual Cafe" });
+        .filter({ hasText: "Acceptance Manual Cafe" })
+        .filter({
+          has: bob.locator('header a[href="/profile/demo.alice"]'),
+        });
       await post.getByRole("button", { name: "Like" }).click();
       await post.getByRole("button", { name: "Unlike" }).waitFor();
       await post.getByRole("button", { name: "Add comment" }).click();
@@ -324,20 +445,30 @@ async function main() {
       );
     });
 
-    await criterion(8, "duplicate page-context save keeps attribution", async () => {
+    await criterion(8, "reshare attribution and duplicate UI state are stable", async () => {
       assert.ok(manualPostId && manualPlaceId && bobSavedId && bobPostId);
-      const duplicate = await pageRequest(
-        bob,
-        `/api/posts/${manualPostId}/save`,
-        { method: "POST" },
+      await bob.goto(`${appUrl}/feed`);
+      const post = bob
+        .locator("article")
+        .filter({ hasText: "Acceptance Manual Cafe" })
+        .filter({
+          has: bob.locator('header a[href="/profile/demo.alice"]'),
+        });
+      const savedButton = post.getByRole("button", { name: "Save place" });
+      await savedButton.waitFor();
+      assert.equal(await savedButton.isDisabled(), true);
+      await bob.reload();
+      assert.equal(
+        await bob
+          .locator("article")
+          .filter({ hasText: "Acceptance Manual Cafe" })
+          .filter({
+            has: bob.locator('header a[href="/profile/demo.alice"]'),
+          })
+          .getByRole("button", { name: "Save place" })
+          .isDisabled(),
+        true,
       );
-      assert.equal(duplicate.status, 200);
-      const body = duplicate.body as {
-        savedPlace: { id: string };
-        post: { id: string };
-      };
-      assert.equal(body.savedPlace.id, bobSavedId);
-      assert.equal(body.post.id, bobPostId);
       const saved = await prisma.userSavedPlace.findUnique({
         where: { id: bobSavedId },
         include: { post: true },
@@ -352,20 +483,52 @@ async function main() {
       );
     });
 
-    await criterion(9, "review page-context update renders in existing post", async () => {
-      assert.ok(manualSavedId);
-      const updated = await pageRequest(
-        alice,
-        `/api/saved/${manualSavedId}`,
-        {
-          method: "PATCH",
-          body: {
-            rating: 5,
-            review: "Updated acceptance review",
-          },
-        },
+    await criterion(9, "saved search filter edit and remove use visible UI", async () => {
+      assert.ok(manualSavedId && searchPlaceId);
+      await alice.goto(`${appUrl}/saved`);
+      const savedSearch = alice.getByLabel("Search saved places");
+      await savedSearch.fill("Acceptance Manual Cafe");
+      const manualRow = alice
+        .locator("li")
+        .filter({ hasText: "Acceptance Manual Cafe" });
+      await manualRow.getByRole("link", { name: "Edit" }).click();
+      await alice.waitForURL(new RegExp(`/places/${manualPlaceId}`));
+      await alice.getByRole("button", { name: "5 stars" }).click();
+      await alice.getByLabel("Review").fill("Updated acceptance review");
+      await alice.locator("#saved-status").selectOption("VISITED");
+      const [updated] = await Promise.all([
+        alice.waitForResponse(
+          (response) =>
+            response.url().includes(`/api/saved/${manualSavedId}`) &&
+            response.request().method() === "PATCH",
+        ),
+        alice.getByRole("button", { name: "Update save" }).click(),
+      ]);
+      assert.equal(updated.status(), 200);
+
+      await alice.goto(`${appUrl}/saved`);
+      await alice.getByLabel("Search saved places").fill("Acceptance Manual");
+      await alice.getByLabel("Status filter").selectOption("VISITED");
+      await alice
+        .locator("li")
+        .filter({ hasText: "Acceptance Manual Cafe" })
+        .waitFor();
+
+      await alice.getByLabel("Status filter").selectOption("ALL");
+      await alice
+        .getByLabel("Search saved places")
+        .fill("Acceptance Harness Search");
+      const searchRow = alice
+        .locator("li")
+        .filter({ hasText: "Acceptance Harness Search Bistro" });
+      await searchRow.waitFor();
+      alice.once("dialog", (dialog) => dialog.accept());
+      await searchRow.getByRole("button", { name: "Remove" }).click();
+      await waitUntil(
+        async () => (await searchRow.count()) === 0,
+        "saved-place removal",
       );
-      assert.equal(updated.status, 200);
+
       await bob.goto(`${appUrl}/feed`);
       const post = bob
         .locator("article")
@@ -375,6 +538,15 @@ async function main() {
       assert.equal(
         await prisma.post.count({ where: { savedPlaceId: manualSavedId } }),
         1,
+      );
+      assert.equal(
+        await prisma.userSavedPlace.count({
+          where: {
+            userId: users.alice.id,
+            placeId: searchPlaceId,
+          },
+        }),
+        0,
       );
     });
 
@@ -403,7 +575,22 @@ async function main() {
     });
 
     await criterion(11, "friend removal hides feed, profiles, and post", async () => {
-      assert.ok(friendshipId && manualPostId);
+      assert.ok(friendshipId && manualPostId && manualPlaceId);
+      await bob.goto(`${appUrl}/saved`);
+      await bob
+        .getByLabel("Search saved places")
+        .fill("Acceptance Manual Cafe");
+      const bobManualRow = bob
+        .locator("li")
+        .filter({ hasText: "Acceptance Manual Cafe" });
+      await bobManualRow.waitFor();
+      bob.once("dialog", (dialog) => dialog.accept());
+      await bobManualRow.getByRole("button", { name: "Remove" }).click();
+      await waitUntil(
+        async () => (await bobManualRow.count()) === 0,
+        "Bob manual save removal",
+      );
+
       await bob.goto(`${appUrl}/friends`);
       const [removed] = await Promise.all([
         bob.waitForResponse(
@@ -445,6 +632,15 @@ async function main() {
       );
       assert.equal(post.status, 404);
       assert.deepEqual(post.body, { error: "Post not found" });
+
+      await bob.goto(`${appUrl}/add`);
+      await bob.locator("#place-search").fill("Acceptance Manual Cafe");
+      await bob.getByRole("button", { name: "Search places" }).click();
+      await bob.getByText("No matches found. Try Manual.").waitFor();
+      assert.equal(
+        (await bob.goto(`${appUrl}/places/${manualPlaceId}`))?.status(),
+        404,
+      );
     });
 
     await criterion(12, "browser reload preserves saved data", async () => {
@@ -465,7 +661,84 @@ async function main() {
       });
       assert.equal(persisted?.rating, 5);
       assert.equal(persisted?.review, "Updated acceptance review");
+      assert.equal(persisted?.status, "VISITED");
       assert.equal(persisted?.post?.id, manualPostId);
+    });
+
+    await criterion(13, "unsaved detail saves and removes canonical place in UI", async () => {
+      assert.ok(searchPlaceId);
+      assert.equal(
+        (await carol.goto(`${appUrl}/places/${searchPlaceId}`))?.status(),
+        200,
+      );
+      const [saved] = await Promise.all([
+        carol.waitForResponse(
+          (response) =>
+            response.url().endsWith("/api/saved") &&
+            response.request().method() === "POST",
+        ),
+        carol.getByRole("button", { name: "Save place" }).click(),
+      ]);
+      assert.equal(saved.status(), 200);
+      assert.equal(carol.url(), `${appUrl}/places/${searchPlaceId}`);
+      await carol.getByRole("button", { name: "Update save" }).waitFor();
+      assert.equal(
+        await prisma.userSavedPlace.count({
+          where: { userId: users.carol.id, placeId: searchPlaceId },
+        }),
+        1,
+      );
+
+      carol.once("dialog", (dialog) => dialog.accept());
+      const [removed] = await Promise.all([
+        carol.waitForResponse(
+          (response) =>
+            response.url().includes("/api/saved/") &&
+            response.request().method() === "DELETE",
+        ),
+        carol.getByRole("button", { name: "Remove save" }).click(),
+      ]);
+      assert.equal(removed.status(), 204);
+      await carol.getByRole("button", { name: "Save place" }).waitFor();
+      assert.equal(
+        await prisma.userSavedPlace.count({
+          where: { userId: users.carol.id, placeId: searchPlaceId },
+        }),
+        0,
+      );
+    });
+
+    await criterion(14, "desktop and 375px mobile layout and keyboard controls pass", async () => {
+      await alice.setViewportSize({ width: 1280, height: 800 });
+      await alice.goto(`${appUrl}/saved`);
+      await assertLayout(alice, false);
+
+      await alice.setViewportSize({ width: 375, height: 812 });
+      await alice.goto(`${appUrl}/saved`);
+      await assertLayout(alice, true);
+
+      const addLink = alice
+        .getByRole("navigation", { name: "Mobile navigation" })
+        .getByRole("link", { name: "Add" });
+      await tabTo(alice, addLink, "mobile Add navigation");
+      await alice.keyboard.press("Enter");
+      await alice.waitForURL(`${appUrl}/add`);
+
+      const manualButton = alice.getByRole("button", {
+        name: "Manual",
+        exact: true,
+      });
+      await tabTo(alice, manualButton, "Manual segmented button");
+      await alice.keyboard.press("Space");
+      await alice.locator("#manual-name").fill("Keyboard Acceptance Place");
+      await alice.locator("#manual-address").fill("14 Keyboard Way");
+      const confirmButton = alice.getByRole("button", {
+        name: "Confirm place",
+      });
+      await tabTo(alice, confirmButton, "Confirm place button");
+      await alice.keyboard.press("Enter");
+      await alice.getByRole("heading", { name: "Confirm details" }).waitFor();
+      await assertLayout(alice, true);
     });
 
     const failures = results.filter(({ error }) => error);

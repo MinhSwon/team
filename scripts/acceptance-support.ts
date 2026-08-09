@@ -100,7 +100,7 @@ export function seedDemoUsers() {
     {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: process.env,
+    env: { ...process.env, ALLOW_DEMO_SEED: "1" },
     },
   );
   if (result.status !== 0) {
@@ -252,6 +252,7 @@ export async function runAcceptance(
         review: "Initial acceptance review",
         tags: ["manual"],
         images: [],
+        status: "SAVED",
       }),
     });
     expectStatus(response, 200, "manual save");
@@ -293,6 +294,7 @@ export async function runAcceptance(
         review: null,
         tags: ["search"],
         images: [],
+        status: "SAVED",
       }),
     });
     expectStatus(searchSave, 200, "search result save");
@@ -325,6 +327,7 @@ export async function runAcceptance(
         review: null,
         tags: ["maps"],
         images: [],
+        status: "SAVED",
       }),
     });
     expectStatus(mapsSave, 200, "Maps fallback save");
@@ -349,15 +352,89 @@ export async function runAcceptance(
     ]) {
       assert.ok(ids.has(id), `Bob feed missing Alice post ${id}`);
     }
+
+    const manualSearch = await json(
+      clients.bob,
+      "/api/places/search?q=Acceptance%20Manual%20Cafe",
+    );
+    expectStatus(manualSearch, 200, "accepted friend manual search");
+    assert.ok(
+      list(
+        record(manualSearch.body, "accepted friend search").candidates,
+        "accepted friend candidates",
+      ).some(
+        (item) =>
+          record(item, "accepted friend candidate").id === state.manualPlaceId,
+      ),
+      "accepted friend must find manual place",
+    );
+    expectStatus(
+      await clients.bob.request(
+        `/places/${required(state.manualPlaceId, "manual place")}`,
+      ),
+      200,
+      "accepted friend manual detail",
+    );
   });
 
   await criterion(6, async () => {
+    for (const label of ["stranger", "pending"] as const) {
+      const search = await json(
+        clients.carol,
+        "/api/places/search?q=Acceptance%20Manual%20Cafe",
+      );
+      expectStatus(search, 200, `${label} manual search`);
+      assert.equal(
+        list(
+          record(search.body, `${label} search`).candidates,
+          `${label} candidates`,
+        ).some(
+          (item) =>
+            record(item, `${label} candidate`).id === state.manualPlaceId,
+        ),
+        false,
+        `${label} must not find manual place`,
+      );
+      expectStatus(
+        await clients.carol.request(
+          `/places/${required(state.manualPlaceId, "manual place")}`,
+        ),
+        404,
+        `${label} manual detail`,
+      );
+
+      if (label === "stranger") {
+        const pending = await json(clients.alice, "/api/friends", {
+          method: "POST",
+          body: JSON.stringify({ addresseeId: state.users.carol.id }),
+        });
+        expectStatus(pending, 201, "create pending Carol friendship");
+      }
+    }
+
     const response = await json(
       clients.carol,
       `/api/posts/${required(state.manualPostId, "manual post")}`,
     );
     expectStatus(response, 404, "Carol post GET");
     assert.deepEqual(response.body, { error: "Post not found" });
+
+    for (const method of ["PATCH", "DELETE"]) {
+      const unauthorized = await json(
+        clients.carol,
+        `/api/saved/${required(state.manualSavedId, "manual saved place")}`,
+        {
+          method,
+          ...(method === "PATCH"
+            ? { body: JSON.stringify({ status: "VISITED" }) }
+            : {}),
+        },
+      );
+      expectStatus(unauthorized, 404, `Carol saved ${method}`);
+      assert.deepEqual(unauthorized.body, {
+        error: "Saved place not found",
+      });
+    }
   });
 
   await criterion(7, async () => {
@@ -452,6 +529,7 @@ export async function runAcceptance(
         body: JSON.stringify({
           rating: 5,
           review: "Updated acceptance review",
+          status: "VISITED",
         }),
       },
     );
@@ -467,6 +545,7 @@ export async function runAcceptance(
     );
     assert.equal(savedPlace.rating, 5);
     assert.equal(savedPlace.review, "Updated acceptance review");
+    assert.equal(savedPlace.status, "VISITED");
     assert.equal(
       await prisma.post.count({
         where: { savedPlaceId: state.manualSavedId },
@@ -511,6 +590,22 @@ export async function runAcceptance(
   });
 
   await criterion(11, async () => {
+    const removeOwnSave = await json(
+      clients.bob,
+      `/api/saved/${required(state.bobSavedId, "Bob saved place")}`,
+      { method: "DELETE" },
+    );
+    expectStatus(removeOwnSave, 204, "remove Bob manual save");
+    assert.equal(
+      await prisma.userSavedPlace.count({
+        where: {
+          userId: state.users.bob.id,
+          placeId: required(state.manualPlaceId, "manual place"),
+        },
+      }),
+      0,
+    );
+
     const response = await json(
       clients.bob,
       `/api/friends/${required(state.friendshipId, "friendship")}`,
@@ -547,6 +642,29 @@ export async function runAcceptance(
     );
     expectStatus(post, 404, "removed friend post GET");
     assert.deepEqual(post.body, { error: "Post not found" });
+
+    const removedSearch = await json(
+      clients.bob,
+      "/api/places/search?q=Acceptance%20Manual%20Cafe",
+    );
+    expectStatus(removedSearch, 200, "removed friend manual search");
+    assert.equal(
+      list(
+        record(removedSearch.body, "removed friend search").candidates,
+        "removed friend candidates",
+      ).some(
+        (item) =>
+          record(item, "removed friend candidate").id === state.manualPlaceId,
+      ),
+      false,
+    );
+    expectStatus(
+      await clients.bob.request(
+        `/places/${required(state.manualPlaceId, "manual place")}`,
+      ),
+      404,
+      "removed friend manual detail",
+    );
     assert.equal(
       await prisma.friendship.count({
         where: {
@@ -572,6 +690,7 @@ export async function runAcceptance(
     });
     assert.equal(persisted?.rating, 5);
     assert.equal(persisted?.review, "Updated acceptance review");
+    assert.equal(persisted?.status, "VISITED");
     assert.equal(persisted?.post?.id, state.manualPostId);
   });
 

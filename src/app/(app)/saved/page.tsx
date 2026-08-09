@@ -1,7 +1,7 @@
 import { Bookmark } from "lucide-react";
 
 import Navigation from "@/components/Navigation";
-import PlaceCard from "@/components/PlaceCard";
+import SavedPlacesClient from "@/components/SavedPlacesClient";
 import { requireCurrentUser } from "@/lib/current-user";
 import { getSavedPlaces } from "@/lib/posts";
 
@@ -23,29 +23,22 @@ export default async function SavedPage() {
           </p>
         </div>
 
-        {savedPlaces.length === 0 ? (
-          <p className="border-y border-slate-800 py-12 text-center text-sm text-slate-400">
-            No saved places yet.
-          </p>
-        ) : (
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {savedPlaces.map((savedPlace) => (
-              <PlaceCard
-                key={savedPlace.id}
-                place={{
-                  id: savedPlace.place.id,
-                  name: savedPlace.place.name,
-                  address: savedPlace.place.address,
-                  area: savedPlace.place.area,
-                  rating: savedPlace.rating,
-                  review: savedPlace.review,
-                  tags: savedPlace.tags,
-                  imageUrl: savedPlace.images[0]?.url ?? null,
-                }}
-              />
-            ))}
-          </div>
-        )}
+        <SavedPlacesClient
+          initialItems={savedPlaces.map((savedPlace) => ({
+            id: savedPlace.id,
+            status: savedPlace.status,
+            rating: savedPlace.rating,
+            review: savedPlace.review,
+            tags: savedPlace.tags,
+            imageUrl: savedPlace.images[0]?.url ?? null,
+            place: {
+              id: savedPlace.place.id,
+              name: savedPlace.place.name,
+              address: savedPlace.place.address,
+              area: savedPlace.place.area,
+            },
+          }))}
+        />
       </main>
     </div>
   );

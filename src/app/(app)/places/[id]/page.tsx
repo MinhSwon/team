@@ -1,8 +1,8 @@
 import { MapPin, Star } from "lucide-react";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import Navigation from "@/components/Navigation";
+import SavedPlaceEditor from "@/components/SavedPlaceEditor";
 import { requireCurrentUser } from "@/lib/current-user";
 import { getPlaceDetail, PostError } from "@/lib/posts";
 
@@ -37,29 +37,29 @@ export default async function PlaceDetailPage({
         </header>
 
         <section className="border-b border-slate-800 py-6">
-          <div className="flex items-center justify-between gap-4">
-            <h2 className="text-lg font-bold text-white">Your save</h2>
-            {!detail.currentUserSave && (
-              <Link
-                className="rounded-md bg-amber-400 px-3 py-2 text-sm font-bold text-slate-950 hover:bg-amber-300"
-                href="/add"
-              >
-                Save place
-              </Link>
-            )}
-          </div>
-
-          {detail.currentUserSave ? (
-            <Review
-              rating={detail.currentUserSave.rating}
-              review={detail.currentUserSave.review}
-              tags={detail.currentUserSave.tags}
-            />
-          ) : (
-            <p className="mt-3 text-sm text-slate-400">
-              This place is not in your library.
-            </p>
-          )}
+          <h2 className="text-lg font-bold text-white">Your save</h2>
+          <SavedPlaceEditor
+            initialSave={
+              detail.currentUserSave
+                ? {
+                    id: detail.currentUserSave.id,
+                    rating: detail.currentUserSave.rating,
+                    review: detail.currentUserSave.review,
+                    tags: detail.currentUserSave.tags,
+                    status: detail.currentUserSave.status,
+                  }
+                : null
+            }
+            place={{
+              id: detail.place.id,
+              name: detail.place.name,
+              address: detail.place.address,
+              area: detail.place.area,
+              latitude: detail.place.latitude,
+              longitude: detail.place.longitude,
+              website: detail.place.website,
+            }}
+          />
         </section>
 
         <section className="py-6">

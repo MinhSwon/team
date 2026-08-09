@@ -28,7 +28,8 @@ import {
 
 type Method = "search" | "mapsUrl" | "manual";
 type Busy = "search" | "resolve" | "upload" | "save" | null;
-type UploadedImage = { name: string; url: string };
+type SavedPlaceStatus = "SAVED" | "WANT_TO_GO" | "VISITED";
+type UploadedImage = { id: string; name: string; url: string };
 type AddPlaceModalProps = {
   isOpen?: boolean;
   onClose?: () => void;
@@ -78,14 +79,13 @@ function MethodTabs({
     <div
       aria-label="Place entry method"
       className="grid grid-cols-3 border border-slate-700"
-      role="tablist"
     >
       {methods.map((item) => {
         const Icon = item.icon;
         const active = method === item.value;
         return (
           <button
-            aria-selected={active}
+            aria-pressed={active}
             className={`flex min-h-11 items-center justify-center gap-2 border-r border-slate-700 px-2 text-sm font-semibold last:border-r-0 ${
               active
                 ? "bg-amber-400 text-slate-950"
@@ -93,7 +93,6 @@ function MethodTabs({
             }`}
             key={item.value}
             onClick={() => onChange(item.value)}
-            role="tab"
             type="button"
           >
             <Icon className="h-4 w-4 shrink-0" />
@@ -438,6 +437,7 @@ function ConfirmationForm({
   const [rating, setRating] = useState<number | null>(null);
   const [review, setReview] = useState("");
   const [tags, setTags] = useState("");
+  const [status, setStatus] = useState<SavedPlaceStatus>("SAVED");
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
   const [uploadError, setUploadError] = useState("");
@@ -448,18 +448,24 @@ function ConfirmationForm({
     const files = Array.from(input.files ?? []);
     input.value = "";
     if (files.length === 0) return;
+    const available = 6 - images.length;
+    if (available <= 0) {
+      setUploadError("Images are limited to 6");
+      return;
+    }
+    const selected = files.slice(0, available);
 
     setBusy("upload");
     setUploadError("");
     const outcomes = await Promise.allSettled(
-      files.map(async (file): Promise<UploadedImage> => {
+      selected.map(async (file): Promise<UploadedImage> => {
         const body = new FormData();
         body.set("image", file);
-        const uploaded = await api<{ url: string }>("/api/uploads", {
+        const uploaded = await api<{ id: string; url: string }>("/api/uploads", {
           method: "POST",
           body,
         });
-        return { name: file.name, url: uploaded.url };
+        return { id: uploaded.id, name: file.name, url: uploaded.url };
       }),
     );
     const uploaded = outcomes.flatMap((outcome) =>
@@ -474,6 +480,9 @@ function ConfirmationForm({
       setImages((current) => [...current, ...uploaded]);
     }
     if (failure) setUploadError(errorMessage(failure.reason));
+    if (files.length > selected.length) {
+      setUploadError("Images are limited to 6");
+    }
     setBusy(null);
   }
 
@@ -494,8 +503,9 @@ function ConfirmationForm({
           rating,
           review,
           tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+          status,
           images: images.map((image) => ({
-            url: image.url,
+            uploadId: image.id,
             caption: null,
           })),
         }),
@@ -573,6 +583,27 @@ function ConfirmationForm({
       <div>
         <label
           className="mb-1.5 block text-sm font-semibold text-slate-300"
+          htmlFor="place-status"
+        >
+          Status
+        </label>
+        <select
+          className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none focus:border-amber-400"
+          id="place-status"
+          onChange={(event) =>
+            setStatus(event.target.value as SavedPlaceStatus)
+          }
+          value={status}
+        >
+          <option value="SAVED">Saved</option>
+          <option value="WANT_TO_GO">Want to go</option>
+          <option value="VISITED">Visited</option>
+        </select>
+      </div>
+
+      <div>
+        <label
+          className="mb-1.5 block text-sm font-semibold text-slate-300"
           htmlFor="place-tags"
         >
           Tags
@@ -615,7 +646,7 @@ function ConfirmationForm({
             {images.map((image) => (
               <li
                 className="flex min-h-11 items-center gap-3 py-2"
-                key={image.url}
+                key={image.id}
               >
                 <ImagePlus className="h-4 w-4 shrink-0 text-emerald-400" />
                 <span className="min-w-0 flex-1 truncate text-sm text-slate-300">
@@ -626,7 +657,7 @@ function ConfirmationForm({
                   className="grid h-8 w-8 place-items-center rounded-md text-slate-500 hover:bg-slate-800 hover:text-rose-400"
                   onClick={() =>
                     setImages((current) =>
-                      current.filter((item) => item.url !== image.url),
+                      current.filter((item) => item.id !== image.id),
                     )
                   }
                   title="Remove image"
