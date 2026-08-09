@@ -214,27 +214,14 @@ function profileUpdate(value: unknown): ProfileUpdate {
 
   if (Object.hasOwn(input, "avatar")) {
     if (input.avatar !== null && typeof input.avatar !== "string") {
-      return invalid("Avatar must be a URL");
+      return invalid("Avatar must be null");
     }
     const avatar =
       typeof input.avatar === "string" ? input.avatar.trim() : "";
     if (!avatar) {
       update.image = null;
     } else {
-      if (avatar.length > 500) return invalid("Avatar URL is too long");
-      try {
-        const url = new URL(avatar);
-        if (
-          url.protocol !== "https:" ||
-          url.username ||
-          url.password
-        ) {
-          return invalid("Avatar must be a valid HTTPS URL");
-        }
-        update.image = url.toString();
-      } catch {
-        return invalid("Avatar must be a valid HTTPS URL");
-      }
+      return invalid("Avatar uploads are not configured");
     }
   }
 
@@ -245,7 +232,7 @@ function publicUser(user: ProfileUserRecord) {
   return {
     username: user.username,
     name: user.name,
-    avatar: user.image,
+    avatar: null,
     bio: user.bio,
   };
 }

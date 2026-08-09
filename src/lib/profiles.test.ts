@@ -142,7 +142,7 @@ test("profile update uses session user, normalizes fields, and checks exact user
       name: "  Alice Smith  ",
       username: "  ALICE.SMITH  ",
       bio: "  New bio  ",
-      avatar: "https://images.example/alice.jpg",
+      avatar: null,
     },
     persistence,
   );
@@ -150,7 +150,7 @@ test("profile update uses session user, normalizes fields, and checks exact user
   assert.deepEqual(updated, {
     username: "alice.smith",
     name: "Alice Smith",
-    avatar: "https://images.example/alice.jpg",
+    avatar: null,
     bio: "New bio",
   });
   assert.equal(persistence.users[0]?.id, "user-a");

@@ -6,6 +6,7 @@ export function mediaUrl(uploadId: string): string {
 
 export type VisibleMediaUpload = {
   pathname: string;
+  contentType: "image/jpeg" | "image/png" | "image/webp";
 };
 
 export function findVisibleMediaUpload(
@@ -16,6 +17,7 @@ export function findVisibleMediaUpload(
     where: {
       id,
       url: { not: null },
+      contentType: { in: ["image/jpeg", "image/png", "image/webp"] },
       OR: [
         {
           ownerId: viewerId,
@@ -53,6 +55,13 @@ export function findVisibleMediaUpload(
         },
       ],
     },
-    select: { pathname: true },
-  });
+    select: { pathname: true, contentType: true },
+  }).then((upload) =>
+    upload && upload.contentType
+      ? {
+          pathname: upload.pathname,
+          contentType: upload.contentType as VisibleMediaUpload["contentType"],
+        }
+      : null,
+  );
 }

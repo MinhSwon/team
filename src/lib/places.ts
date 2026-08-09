@@ -115,12 +115,13 @@ function optionalCoordinate(
 function optionalWebsite(value: unknown): string | null | undefined {
   const website = optionalText(value, PLACE_LIMITS.website);
   if (website == null || !website.trim()) return website;
+  const normalized = website.trim();
   try {
-    const url = new URL(website);
+    const url = new URL(normalized);
     if (url.protocol !== "https:" || url.username || url.password) {
       invalidInput();
     }
-    return website;
+    return normalized;
   } catch {
     return invalidInput();
   }
@@ -149,6 +150,7 @@ export function parsePlaceInput(value: unknown): PlaceInput {
     ) {
       invalidInput();
     }
+    mapsUrl(input.url);
     return { type: "mapsUrl", url: input.url };
   }
 

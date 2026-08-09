@@ -37,7 +37,6 @@ export default function ProfileForm({ profile }: { profile: Profile }) {
           name: form.get("name"),
           username: form.get("username"),
           bio: form.get("bio"),
-          avatar: form.get("avatar"),
         }),
       });
       const body: unknown = await response.json();
@@ -117,19 +116,6 @@ export default function ProfileForm({ profile }: { profile: Profile }) {
           defaultValue={profile.bio ?? ""}
           maxLength={500}
           name="bio"
-        />
-      </label>
-
-      <label className="block text-sm font-medium text-slate-200">
-        Avatar URL
-        <input
-          autoComplete="url"
-          className={inputClassName}
-          defaultValue={profile.avatar ?? ""}
-          maxLength={500}
-          name="avatar"
-          placeholder="https://"
-          type="url"
         />
       </label>
 

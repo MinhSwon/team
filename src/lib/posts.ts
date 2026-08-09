@@ -496,8 +496,20 @@ function prismaStore(
     const uploadIds = images.map(({ blobUploadId }) => blobUploadId);
     if (uploadIds.length > 0) {
       await client.blobUpload.updateMany({
-        where: { id: { in: uploadIds }, lifecycle: "CLAIMED" },
-        data: { lifecycle: "PENDING_DELETE" },
+        where: {
+          id: { in: uploadIds },
+          lifecycle: {
+            in: [
+              "UPLOADED",
+              "CLAIMED",
+              "PENDING_PRIVATE_COPY",
+              "CONVERTING",
+              "PENDING_PUBLIC_DELETE",
+              "PENDING_DELETE",
+            ],
+          },
+        },
+        data: { lifecycle: "PENDING_DELETE", leaseUntil: null },
       });
     }
   }

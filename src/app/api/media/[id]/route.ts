@@ -86,7 +86,6 @@ export async function handleMediaRequest(
       !blob ||
       blob.statusCode !== 200 ||
       !blob.stream ||
-      !blob.blob.contentType ||
       blob.blob.size === null
     ) {
       return mediaNotFound();
@@ -95,8 +94,9 @@ export async function handleMediaRequest(
       headers: {
         "Cache-Control": "private, no-store",
         "Content-Length": String(blob.blob.size),
-        "Content-Type": blob.blob.contentType,
+        "Content-Type": upload.contentType,
         "Content-Disposition": "inline",
+        "X-Content-Type-Options": "nosniff",
         Vary: "Cookie",
       },
     });

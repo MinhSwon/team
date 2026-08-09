@@ -86,11 +86,11 @@ test("private Blob migration backfills exact ownership and blocks unsupported UR
   const sql = source(
     "prisma/migrations/20260809011000_private_blob_media/migration.sql",
   );
-  assert.match(enumSql, /Unsupported SavedPlaceImage URL/);
+  assert.match(enumSql, /Unsupported or foreign SavedPlaceImage URL/);
   assert.match(enumSql, /ADD VALUE IF NOT EXISTS 'RESERVED'/);
   assert.doesNotMatch(enumSql, /'RESERVED'::"BlobLifecycle"/);
   const unsupportedAbort = sql.indexOf(
-    "Unsupported SavedPlaceImage URL",
+    "Unsupported or foreign SavedPlaceImage URL",
   );
   const firstMutation = Math.min(
     ...["ALTER TYPE", "ALTER TABLE", "INSERT INTO", "UPDATE "]
@@ -105,10 +105,9 @@ test("private Blob migration backfills exact ownership and blocks unsupported UR
     /JOIN "UserSavedPlace" saved ON saved\."id" = image\."savedPlaceId"/,
   );
   assert.match(sql, /saved\."userId"/);
-  assert.match(sql, /\\\.public\\\.blob\\\.vercel-storage\\\.com/);
+  assert.match(sql, /legacy_blob_store_hosts/);
   assert.match(sql, /PENDING_PRIVATE_COPY/);
-  assert.match(sql, /\\\.private\\\.blob\\\.vercel-storage\\\.com/);
-  assert.match(sql, /CLAIMED/);
+  assert.doesNotMatch(sql, /THEN 'CLAIMED'::"BlobLifecycle"/);
   assert.match(sql, /'\/api\/media\/' \|\| image\."blobUploadId"/);
   assert.match(sql, /ALTER COLUMN "blobUploadId" SET NOT NULL/);
   assert.match(sql, /ON DELETE RESTRICT/);
@@ -117,7 +116,10 @@ test("private Blob migration backfills exact ownership and blocks unsupported UR
 test("migration verifier executes private, public, and unsupported image proofs", () => {
   const verifier = source("scripts/verify-migrations.ts");
 
-  assert.match(verifier, /PASS private Blob image backfills exact owner and claimed lifecycle/);
+  assert.match(
+    verifier,
+    /PASS private Blob image backfills exact owner and pending verified conversion/,
+  );
   assert.match(verifier, /PASS public Blob image enters durable private-copy ledger/);
   assert.match(verifier, /PASS unsupported external image aborts before schema or data mutation/);
   assert.match(verifier, /PENDING_PRIVATE_COPY/);
@@ -322,6 +324,7 @@ test("Blob cleanup claims work once and recovers stale deletion leases", async (
     url: "https://store.private.blob.vercel-storage.com/pending.webp",
     sourceUrl: null,
     pathname: "places/user/pending.webp",
+    contentType: "image/webp" as const,
     lifecycle: "DELETING" as const,
     createdAt: new Date("2026-08-08T00:00:00.000Z"),
     leaseUntil: new Date("2026-08-09T10:00:00.000Z"),
@@ -368,6 +371,7 @@ test("Blob cleanup starts independent provider deletes concurrently", async () =
     url: `https://blob.example/${id}.webp`,
     sourceUrl: null,
     pathname: `places/user/${id}.webp`,
+    contentType: "image/webp" as const,
     lifecycle: "PENDING_DELETE" as const,
     createdAt: new Date("2026-08-09T00:00:00.000Z"),
     leaseUntil: new Date("2026-08-09T12:05:00.000Z"),
@@ -418,6 +422,7 @@ test("legacy public Blob conversion is durable and deletes source only after pri
           pathname: "places/user-1/legacy/legacy-1.webp",
           lifecycle: "CONVERTING",
           leaseUntil,
+          contentType: null,
         },
       ],
       recordPrivateCopy: async (
@@ -439,25 +444,37 @@ test("legacy public Blob conversion is durable and deletes source only after pri
     },
     get: async (url: string, options: { access: string; useCache: boolean }) => {
       events.push(`get:${url}`);
-      assert.deepEqual(options, {
-        access: "public",
-        token: "blob-token",
-        useCache: false,
-      });
+      assert.equal(options.access, "public");
+      assert.equal(options.useCache, false);
       return {
         statusCode: 200,
         stream: new ReadableStream<Uint8Array>({
           start(controller) {
-            controller.enqueue(new Uint8Array([1]));
+            controller.enqueue(
+              new Uint8Array([
+                0x52,
+                0x49,
+                0x46,
+                0x46,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x57,
+                0x45,
+                0x42,
+                0x50,
+              ]),
+            );
             controller.close();
           },
         }),
-        blob: { contentType: "image/webp" },
+        blob: { contentType: "image/webp", size: 12 },
       };
     },
     put: async (
       pathname: string,
-      _stream: ReadableStream<Uint8Array>,
+      _stream: Uint8Array,
       options: {
         access: string;
         addRandomSuffix: boolean;
@@ -477,6 +494,7 @@ test("legacy public Blob conversion is durable and deletes source only after pri
       events.push(`delete:${url}`);
     },
     token: "blob-token",
+    allowedHosts: ["store.public.blob.vercel-storage.com"],
   });
 
   assert.equal(
@@ -685,6 +703,7 @@ test("saved and place-detail UI expose visible workflow controls", () => {
 test("acceptance starts a fresh isolated production server and covers registration/mobile routes", () => {
   const social = source("scripts/acceptance-social.ts");
   const browser = source("scripts/acceptance-browser.ts");
+  const browserResources = source("scripts/acceptance-browser-resources.ts");
   const server = source("scripts/acceptance-server.ts");
 
   for (const script of [social, browser]) {
@@ -722,8 +741,9 @@ test("acceptance starts a fresh isolated production server and covers registrati
   assert.match(browser, /Create account/);
   assert.doesNotMatch(browser, /import \{\s*chromium/);
   assert.match(browser, /await import\("playwright-core"\)/);
+  assert.match(browser, /closeBrowserResources/);
   assert.match(
-    browser,
+    browserResources,
     /deleteMany\(\{\s*where:\s*\{\s*email:\s*freshEmail/,
   );
   for (const route of [
@@ -737,4 +757,664 @@ test("acceptance starts a fresh isolated production server and covers registrati
   ]) {
     assert.match(browser, new RegExp(route.replaceAll("/", "\\/")));
   }
+});
+
+test("legacy Blob migration requires exact owned hosts and leaves all legacy media unverified", () => {
+  const enumSql = source(
+    "prisma/migrations/20260809010000_private_blob_lifecycle_enum/migration.sql",
+  );
+  const mediaSql = source(
+    "prisma/migrations/20260809011000_private_blob_media/migration.sql",
+  );
+
+  assert.match(
+    `${enumSql}\n${mediaSql}`,
+    /current_setting\(['"]placedecide\.legacy_blob_store_hosts['"],\s*true\)/,
+  );
+  assert.match(
+    `${enumSql}\n${mediaSql}`,
+    /exact.*owned.*host|owned.*host.*exact/i,
+  );
+  assert.doesNotMatch(
+    `${enumSql}\n${mediaSql}`,
+    /\\\.[a-z0-9-]+\\\.\(public\|private\)\\\.blob\\\.vercel-storage\\\.com/,
+  );
+  assert.doesNotMatch(
+    mediaSql,
+    /THEN 'CLAIMED'::"BlobLifecycle"/,
+  );
+  assert.match(mediaSql, /PENDING_PRIVATE_COPY/);
+  assert.match(mediaSql, /contentType/);
+});
+
+test("legacy Blob conversion rejects foreign hosts and hostile image bytes", async () => {
+  const blobs = await import("./blob-uploads") as typeof import("./blob-uploads") & {
+    isTrustedLegacyBlobUrl?: (
+      url: string,
+      allowedHosts: readonly string[],
+    ) => boolean;
+  };
+  assert.equal(
+    blobs.isTrustedLegacyBlobUrl?.(
+      "https://owned.public.blob.vercel-storage.com/old.png",
+      ["owned.public.blob.vercel-storage.com"],
+    ),
+    true,
+  );
+  assert.equal(
+    blobs.isTrustedLegacyBlobUrl?.(
+      "https://other.public.blob.vercel-storage.com/old.png",
+      ["owned.public.blob.vercel-storage.com"],
+    ),
+    false,
+  );
+  assert.equal(
+    blobs.isTrustedLegacyBlobUrl?.(
+      "https://owned.public.blob.vercel-storage.com/old.png",
+      ["OWNED.PUBLIC.BLOB.VERCEL-STORAGE.COM"],
+    ),
+    true,
+  );
+
+  let putCalls = 0;
+  let deleteCalls = 0;
+  const result = await blobs.convertLegacyBlobUploads({
+    now: new Date("2026-08-09T12:00:00.000Z"),
+    allowedHosts: ["owned.public.blob.vercel-storage.com"],
+    store: {
+      claimConversionCandidates: async () => [
+        {
+          id: "legacy-hostile",
+          ownerId: "user-1",
+          url: null,
+          sourceUrl:
+            "https://owned.public.blob.vercel-storage.com/old.png",
+          pathname: "places/user-1/legacy/legacy-hostile.png",
+          lifecycle: "CONVERTING",
+          leaseUntil: new Date("2026-08-09T12:05:00.000Z"),
+          contentType: null,
+        },
+      ],
+      recordPrivateCopy: async () => true,
+      finishConversion: async () => true,
+      releaseConversionClaim: async () => {},
+    },
+    get: async () => ({
+      statusCode: 200,
+      stream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode("<html><script>alert(1)</script>"),
+          );
+          controller.close();
+        },
+      }),
+      blob: { contentType: "image/png", size: 31 },
+    }),
+    put: async () => {
+      putCalls += 1;
+      return {
+        url: "https://owned.private.blob.vercel-storage.com/new.png",
+        pathname: "places/user-1/legacy/legacy-hostile.png",
+      };
+    },
+    del: async () => {
+      deleteCalls += 1;
+    },
+    token: "blob-token",
+  } as never);
+
+  assert.deepEqual(result, { converted: 0, failed: 1 });
+  assert.equal(putCalls, 0);
+  assert.equal(deleteCalls, 0);
+});
+
+test("legacy Blob conversion derives provider access from hostname only", async () => {
+  const blobs = await import("./blob-uploads");
+  const accesses: string[] = [];
+
+  for (const [sourceUrl, expectedAccess] of [
+    [
+      "https://owned.public.blob.vercel-storage.com/folder/.private./old.png",
+      "public",
+    ],
+    [
+      "https://owned.private.blob.vercel-storage.com/old.png",
+      "private",
+    ],
+  ] as const) {
+    const leaseUntil = new Date("2026-08-09T12:05:00.000Z");
+    const result = await blobs.convertLegacyBlobUploads({
+      now: new Date("2026-08-09T12:00:00.000Z"),
+      allowedHosts: [
+        "owned.public.blob.vercel-storage.com",
+        "owned.private.blob.vercel-storage.com",
+      ],
+      store: {
+        claimConversionCandidates: async () => [
+          {
+            id: expectedAccess,
+            ownerId: "user-1",
+            url: null,
+            sourceUrl,
+            pathname: `places/user-1/legacy/${expectedAccess}.png`,
+            lifecycle: "CONVERTING",
+            leaseUntil,
+            contentType: null,
+          },
+        ],
+        recordPrivateCopy: async () => true,
+        finishConversion: async () => true,
+        releaseConversionClaim: async () => {},
+      },
+      get: async (_url, options) => {
+        accesses.push(options.access);
+        return {
+          statusCode: 200,
+          stream: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                new Uint8Array([
+                  0x89,
+                  0x50,
+                  0x4e,
+                  0x47,
+                  0x0d,
+                  0x0a,
+                  0x1a,
+                  0x0a,
+                ]),
+              );
+              controller.close();
+            },
+          }),
+          blob: { contentType: "image/png", size: 8 },
+        };
+      },
+      put: async (pathname) => ({
+        url: `https://owned.private.blob.vercel-storage.com/${pathname}`,
+        pathname,
+      }),
+      del: async () => {},
+      token: "blob-token",
+    });
+    assert.deepEqual(result, { converted: 1, failed: 0 });
+  }
+
+  assert.deepEqual(accesses, ["public", "private"]);
+});
+
+test("private media uses stored trusted MIME and nosniff, never provider MIME", async () => {
+  const media = await import("../app/api/media/[id]/route") as typeof import("../app/api/media/[id]/route");
+  const response = await media.handleMediaRequest(
+    new Request("http://localhost/api/media/upload-1"),
+    "upload-1",
+    {
+      requireUser: async () => ({ id: "viewer-1" }),
+      findVisibleUpload: async () => ({
+        pathname: "places/user-1/upload-1.png",
+        contentType: "image/png",
+      }),
+      get: async () => ({
+        statusCode: 200,
+        stream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new Uint8Array([
+                0x89,
+                0x50,
+                0x4e,
+                0x47,
+                0x0d,
+                0x0a,
+                0x1a,
+                0x0a,
+              ]),
+            );
+            controller.close();
+          },
+        }),
+        blob: { contentType: "text/html", size: 8 },
+      }),
+      token: "blob-token",
+    } as never,
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "image/png");
+  assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+});
+
+test("ambiguous Blob put failure retains durable reservation", async () => {
+  const { handleUpload } = await import("../app/api/uploads/route");
+  let cancelled = false;
+  const response = await handleUpload(
+    new Request("http://localhost/api/uploads", {
+      method: "POST",
+      body: (() => {
+        const form = new FormData();
+        form.set(
+          "image",
+          new File(
+            [
+              new Uint8Array([
+                0x89,
+                0x50,
+                0x4e,
+                0x47,
+                0x0d,
+                0x0a,
+                0x1a,
+                0x0a,
+              ]),
+            ],
+            "place.png",
+            { type: "image/png" },
+          ),
+        );
+        return form;
+      })(),
+    }),
+    {
+      requireUser: async () => ({ id: "user-1" }),
+      token: "blob-token",
+      reserveUpload: async (_ownerId: string, pathname: string) => ({
+        id: "upload-1",
+        pathname,
+      }),
+      put: async () => {
+        throw new Error("provider response ambiguous");
+      },
+      completeUpload: async () => {
+        throw new Error("unreachable");
+      },
+      cancelReservation: async () => {
+        cancelled = true;
+      },
+      queueDeletion: async () => {},
+      del: async () => {},
+      rateLimit: async () => {},
+    } as never,
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal(cancelled, false);
+});
+
+test("cleanup treats missing provider objects as idempotent success", async () => {
+  const blobs = await import("./blob-uploads");
+  const result = await blobs.cleanupBlobUploads({
+    store: {
+      claimCleanupCandidates: async () => [
+        {
+          id: "missing",
+          url: "https://owned.private.blob.vercel-storage.com/missing.png",
+          sourceUrl: null,
+          pathname: "places/user-1/missing.png",
+          contentType: "image/png" as const,
+          lifecycle: "PENDING_DELETE",
+          createdAt: new Date("2026-08-09T00:00:00.000Z"),
+          leaseUntil: new Date("2026-08-09T12:05:00.000Z"),
+        },
+      ],
+      deleteClaimedRecord: async () => true,
+      releaseDeleteClaim: async () => {},
+    },
+    del: async () => {
+      throw Object.assign(new Error("not found"), { statusCode: 404 });
+    },
+  });
+
+  assert.deepEqual(result, { deleted: 1, failed: 0 });
+});
+
+test("image deletion covers every active lifecycle and clears conversion leases", () => {
+  const posts = source("src/lib/posts.ts");
+  assert.match(
+    posts,
+    /lifecycle:\s*\{\s*in:\s*\[[\s\S]*"UPLOADED"[\s\S]*"PENDING_PRIVATE_COPY"[\s\S]*"CONVERTING"[\s\S]*"PENDING_PUBLIC_DELETE"[\s\S]*\]/,
+  );
+  assert.match(posts, /leaseUntil:\s*null/);
+});
+
+test("image deletion wins before or after an in-flight private copy is recorded", async () => {
+  const blobs = await import("./blob-uploads");
+
+  for (const deletionPoint of ["before-record", "after-record"] as const) {
+    const leaseUntil = new Date("2026-08-09T12:05:00.000Z");
+    const state: {
+      lifecycle: "CONVERTING" | "PENDING_DELETE";
+      leaseUntil: Date | null;
+      url: string | null;
+      sourceUrl: string;
+      claimed: boolean;
+    } = {
+      lifecycle: "CONVERTING",
+      leaseUntil,
+      url: null,
+      sourceUrl:
+        "https://owned.public.blob.vercel-storage.com/race.png",
+      claimed: false,
+    };
+    let releaseProvider = () => {};
+    const providerBlocked = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let providerStarted = () => {};
+    const providerStart = new Promise<void>((resolve) => {
+      providerStarted = resolve;
+    });
+
+    const conversion = blobs.convertLegacyBlobUploads({
+      now: new Date("2026-08-09T12:00:00.000Z"),
+      allowedHosts: ["owned.public.blob.vercel-storage.com"],
+      store: {
+        claimConversionCandidates: async () => [
+          {
+            id: deletionPoint,
+            ownerId: "user-1",
+            url: null,
+            sourceUrl: state.sourceUrl,
+            pathname: `places/user-1/legacy/${deletionPoint}.png`,
+            lifecycle: "CONVERTING",
+            leaseUntil,
+            contentType: null,
+          },
+        ],
+        recordPrivateCopy: async (_id, candidateLease, blob) => {
+          if (
+            state.lifecycle !== "CONVERTING" ||
+            state.leaseUntil?.getTime() !== candidateLease.getTime()
+          ) {
+            return false;
+          }
+          state.url = blob.url;
+          if (deletionPoint === "after-record") {
+            providerStarted();
+            await providerBlocked;
+          }
+          return true;
+        },
+        finishConversion: async (_id, candidateLease) => {
+          if (
+            state.lifecycle !== "CONVERTING" ||
+            state.leaseUntil?.getTime() !== candidateLease.getTime()
+          ) {
+            return false;
+          }
+          state.lifecycle = "CONVERTING";
+          state.claimed = true;
+          return true;
+        },
+        releaseConversionClaim: async (_id, candidateLease) => {
+          if (
+            state.lifecycle === "CONVERTING" &&
+            state.leaseUntil?.getTime() === candidateLease.getTime()
+          ) {
+            state.leaseUntil = null;
+          }
+        },
+      },
+      get: async () => ({
+        statusCode: 200,
+        stream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new Uint8Array([
+                0x89,
+                0x50,
+                0x4e,
+                0x47,
+                0x0d,
+                0x0a,
+                0x1a,
+                0x0a,
+              ]),
+            );
+            controller.close();
+          },
+        }),
+        blob: { contentType: "image/png", size: 8 },
+      }),
+      put: async (pathname) => {
+        if (deletionPoint === "before-record") {
+          providerStarted();
+          await providerBlocked;
+        }
+        return {
+          url: `https://owned.private.blob.vercel-storage.com/${pathname}`,
+          pathname,
+        };
+      },
+      del: async () => {},
+      token: "blob-token",
+    });
+
+    await providerStart;
+    state.lifecycle = "PENDING_DELETE";
+    state.leaseUntil = null;
+    releaseProvider();
+
+    assert.deepEqual(await conversion, { converted: 0, failed: 1 });
+    assert.equal(state.lifecycle, "PENDING_DELETE");
+    assert.equal(state.leaseUntil, null);
+    assert.equal(state.claimed, false);
+  }
+});
+
+test("Blob conversion and provider cleanup use bounded abort signals", () => {
+  const blobs = source("src/lib/blob-uploads.ts");
+  const uploads = source("src/app/api/uploads/route.ts");
+  assert.match(blobs, /AbortSignal\.timeout|abortSignal/);
+  assert.match(uploads, /AbortSignal\.timeout|abortSignal/);
+  assert.match(blobs, /5 \* 1024 \* 1024/);
+  assert.match(blobs, /image\/jpeg/);
+  assert.match(blobs, /image\/png/);
+  assert.match(blobs, /image\/webp/);
+});
+
+test("hung Blob provider call times out before conversion lease expiry", async () => {
+  const blobs = await import("./blob-uploads");
+  let aborted = false;
+  let released = 0;
+  const started = Date.now();
+  const result = await blobs.convertLegacyBlobUploads({
+    now: new Date("2026-08-09T12:00:00.000Z"),
+    timeoutMs: 20,
+    allowedHosts: ["owned.public.blob.vercel-storage.com"],
+    store: {
+      claimConversionCandidates: async () => [
+        {
+          id: "hung-provider",
+          ownerId: "user-1",
+          url: null,
+          sourceUrl:
+            "https://owned.public.blob.vercel-storage.com/hung.png",
+          pathname: "places/user-1/legacy/hung",
+          contentType: null,
+          lifecycle: "CONVERTING",
+          leaseUntil: new Date("2026-08-09T12:05:00.000Z"),
+        },
+      ],
+      recordPrivateCopy: async () => true,
+      finishConversion: async () => true,
+      releaseConversionClaim: async () => {
+        released += 1;
+      },
+    },
+    get: async (
+      _url: string,
+      options: { abortSignal: AbortSignal },
+    ) => {
+      options.abortSignal.addEventListener("abort", () => {
+        aborted = true;
+      });
+      return await new Promise<never>(() => {});
+    },
+    put: async () => {
+      throw new Error("put must not run");
+    },
+    del: async () => {},
+    token: "blob-token",
+  } as never);
+
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(aborted, true);
+  assert.equal(released, 1);
+  assert.deepEqual(result, { converted: 0, failed: 1 });
+});
+
+test("blob conversion readiness gates startup and rejects pending or failed rows", () => {
+  const readinessPath = new URL("../../scripts/verify-blob-conversion.ts", import.meta.url);
+  assert.equal(existsSync(readinessPath), true);
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { scripts?: Record<string, string> };
+  assert.match(packageJson.scripts?.["verify:blob-conversion"] ?? "", /verify-blob-conversion/);
+  const readiness = source("scripts/verify-blob-conversion.ts");
+  assert.match(readiness, /PENDING_PRIVATE_COPY/);
+  assert.match(readiness, /CONVERTING/);
+  assert.match(readiness, /PENDING_PUBLIC_DELETE/);
+  assert.match(readiness, /lastError/);
+  assert.match(source("scripts/acceptance-server.ts"), /verify-blob-conversion/);
+});
+
+test("production auth fails without valid trusted proxies and accepts exact proxy IPs", async () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--eval", "import('./src/lib/auth.ts')"],
+    {
+      cwd: new URL("../../", import.meta.url),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+        DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:5432/placedecide",
+        BETTER_AUTH_SECRET: "x".repeat(32),
+        BETTER_AUTH_URL: "http://localhost:3000",
+        TRUSTED_PROXY_IPS: "",
+      },
+    },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /TRUSTED_PROXY_IPS/i,
+  );
+
+  const rateLimits = source("src/lib/rate-limit.ts");
+  assert.match(rateLimits, /isIP/);
+  assert.match(source("src/lib/auth.ts"), /disableIpTracking/);
+  const { trustedProxyList } = await import("./rate-limit");
+  assert.deepEqual(
+    trustedProxyList({
+      NODE_ENV: "production",
+      TRUSTED_PROXY_IPS: "127.0.0.1,::1,10.0.0.0/8",
+    }),
+    ["127.0.0.1", "::1", "10.0.0.0/8"],
+  );
+});
+
+test("acceptance captures immutable source identity before build and checks tracked cleanliness", () => {
+  const server = source("scripts/acceptance-server.ts");
+  const sourceCommit = server.indexOf("const sourceCommit = currentCommit()");
+  const build = server.indexOf('runNode(nextBin, ["build"]');
+  assert.ok(sourceCommit >= 0 && sourceCommit < build);
+  assert.match(server, /status",\s*"--porcelain",\s*"--untracked-files=no"/);
+  assert.match(server, /currentCommit\(\),\s*sourceCommit/);
+});
+
+test("browser acceptance cleanup surrounds database and browser setup", async () => {
+  const browser = source("scripts/acceptance-browser.ts");
+  const browserResources = source("scripts/acceptance-browser-resources.ts");
+  const tryIndex = browser.indexOf("\n  try {");
+  assert.ok(tryIndex >= 0);
+  assert.ok(tryIndex < browser.indexOf("seedDemoUsers()"));
+  assert.match(browser, /closeBrowserResources/);
+  assert.match(browserResources, /browser\?\.close/);
+  assert.match(browserResources, /contexts\.map/);
+
+  const cleanupModule = await import(
+    "../../scripts/acceptance-browser-resources"
+  ).catch(() => null);
+  assert.ok(cleanupModule, "browser resource cleanup helper must be importable");
+  const events: string[] = [];
+  await cleanupModule.closeBrowserResources({
+    contexts: [
+      { close: async () => void events.push("context-1") },
+      { close: async () => void events.push("context-2") },
+    ],
+    browser: { close: async () => void events.push("browser") },
+    prisma: {
+      user: {
+        deleteMany: async () => {
+          events.push("fresh-user");
+          return { count: 1 };
+        },
+      },
+      $disconnect: async () => void events.push("prisma"),
+    },
+    freshEmail: "setup-failed@example.com",
+  } as never);
+  assert.deepEqual(events, [
+    "context-1",
+    "context-2",
+    "browser",
+    "fresh-user",
+    "prisma",
+  ]);
+});
+
+test("profile avatar updates reject external URLs and UI keeps initials fallback", async () => {
+  const persistence = {
+    findUserByUsername: async () => null,
+    findVisibleProfile: async () => null,
+    updateUser: async () => ({
+      id: "user-1",
+      username: "user",
+      name: "User",
+      image: null,
+      bio: null,
+    }),
+  };
+  const profiles = await import("./profiles");
+  await assert.rejects(
+    profiles.updateProfile(
+      "user-1",
+      { avatar: "https://images.example/avatar.png" },
+      persistence,
+    ),
+    (error: unknown) =>
+      error instanceof profiles.ProfileError &&
+      error.code === "INVALID_INPUT",
+  );
+  assert.doesNotMatch(
+    source("src/app/(app)/settings/profile/ProfileForm.tsx"),
+    /Avatar URL/,
+  );
+});
+
+test("place parser rejects invalid Maps URLs at the trust boundary", async () => {
+  const places = await import("./places");
+  for (const url of [
+    "http://www.google.com/maps/place/Cafe",
+    "https://user:pass@www.google.com/maps/place/Cafe",
+    "https://example.com/not-maps",
+  ]) {
+    assert.throws(
+      () => places.parsePlaceInput({ type: "mapsUrl", url }),
+      /Invalid|Google Maps|supported/i,
+    );
+  }
+  assert.throws(
+    () =>
+      places.parsePlaceInput({
+        type: "manual",
+        name: "Cafe",
+        address: "1 Main",
+        area: "a".repeat(121),
+      }),
+    /Invalid place input/,
+  );
 });

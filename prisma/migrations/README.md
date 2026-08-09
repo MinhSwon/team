@@ -8,8 +8,11 @@ and owned Blob lifecycle records.
 `20260809010000_private_blob_lifecycle_enum` preflights existing image URLs,
 then commits the private-copy, reservation, and cleanup lease states.
 `20260809011000_private_blob_media` repeats the preflight, derives image owners
-only through `UserSavedPlace.userId`, and moves all supported image rows to
-stable internal media URLs.
+only through `UserSavedPlace.userId`, records MIME as unverified until copy,
+and moves all supported image rows to stable internal media URLs.
+`20260809012000_private_blob_hardening` upgrades already-deployed private-media
+schemas, rechecks exact source ownership, and returns referenced provider
+objects to `PENDING_PRIVATE_COPY` until byte validation completes.
 
 ## Fresh Databases
 
@@ -59,21 +62,28 @@ objects.
 Before applying the private-media migrations, inspect every
 `SavedPlaceImage.url`:
 
-- Supported private Vercel Blob URLs become `CLAIMED`.
-- Supported public Vercel Blob URLs become `PENDING_PRIVATE_COPY`.
+- Set `LEGACY_BLOB_STORE_HOSTS` to exact owned hostnames and PostgreSQL
+  `placedecide.legacy_blob_store_hosts` to the same comma-separated value.
+  Pass the PostgreSQL setting through Prisma's connection URL, for example:
+  `?schema=public&options=-c%20placedecide.legacy_blob_store_hosts%3Dstore-id.public.blob.vercel-storage.com%2Cstore-id.private.blob.vercel-storage.com`.
+- Both public and private rows become `PENDING_PRIVATE_COPY`; no legacy row is
+  readable before byte validation.
 - Ownership always comes from the related `UserSavedPlace.userId`.
-- Unsupported external URLs abort before the enum, schema, or image data is
-  changed. Convert or remove them explicitly; the migration never guesses.
+- Unsupported external or foreign-host URLs abort before the enum, schema, or
+  image data is changed. Convert or remove them explicitly; migration never
+  guesses.
 
 After deploy, configure `BLOB_READ_WRITE_TOKEN` and run:
 
 ```powershell
 npm run cleanup:blobs
+npm run verify:blob-conversion
 ```
 
-The worker copies public objects to private storage, records the private copy
-before deleting the public source, retries failures, and leases work so
-overlapping workers cannot process one row at once.
+The worker validates 5 MB size, JPEG/PNG/WebP magic bytes, and trusted MIME,
+copies objects to private storage, records the private copy before deleting
+the source, retries failures, and leases work so overlapping workers cannot
+process one row at once. Build/start readiness must pass before cutover.
 
 ## Proof
 

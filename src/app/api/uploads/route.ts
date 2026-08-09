@@ -28,6 +28,7 @@ export type UploadPut = (
     addRandomSuffix: false;
     contentType: string;
     token: string;
+    abortSignal: AbortSignal;
   },
 ) => Promise<{ url: string; pathname: string }>;
 
@@ -41,6 +42,7 @@ export type UploadDependencies = {
   completeUpload: (
     id: string,
     blob: { url: string; pathname: string },
+    contentType: ImageType,
   ) => Promise<UploadedBlob>;
   cancelReservation: (id: string) => Promise<void>;
   queueDeletion: (
@@ -48,7 +50,10 @@ export type UploadDependencies = {
     blob: { url: string; pathname: string },
     error?: unknown,
   ) => Promise<void>;
-  del: (url: string) => Promise<void>;
+  del: (
+    url: string,
+    options?: { abortSignal: AbortSignal },
+  ) => Promise<void>;
   rateLimit: (request: Request, userId: string) => Promise<void>;
   token?: string;
 };
@@ -204,21 +209,25 @@ export async function handleUpload(
         addRandomSuffix: false,
         contentType: file.type,
         token: dependencies.token,
+        abortSignal: AbortSignal.timeout(30_000),
       },
     );
   } catch {
-    try {
-      await dependencies.cancelReservation(reservation.id);
-    } catch {}
     return Response.json({ error: "Image upload failed" }, { status: 502 });
   }
 
   try {
-    const upload = await dependencies.completeUpload(reservation.id, blob);
+    const upload = await dependencies.completeUpload(
+      reservation.id,
+      blob,
+      file.type,
+    );
     return Response.json(upload, { status: 201 });
   } catch {
     try {
-      await dependencies.del(blob.url);
+      await dependencies.del(blob.url, {
+        abortSignal: AbortSignal.timeout(30_000),
+      });
       try {
         await dependencies.cancelReservation(reservation.id);
       } catch {}
@@ -243,7 +252,11 @@ export function POST(request: Request): Promise<Response> {
     completeUpload: completeBlobUpload,
     cancelReservation: cancelBlobReservation,
     queueDeletion: queueBlobDeletion,
-    del: (url) => del(url, { token: process.env.BLOB_READ_WRITE_TOKEN }),
+    del: (url, options) =>
+      del(url, {
+        token: process.env.BLOB_READ_WRITE_TOKEN,
+        ...options,
+      }),
     rateLimit: (nextRequest, userId) =>
       enforceRateLimit(nextRequest, userId, "upload"),
     token: process.env.BLOB_READ_WRITE_TOKEN,

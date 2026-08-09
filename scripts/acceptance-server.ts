@@ -46,6 +46,27 @@ function currentCommit(): string {
   return result.stdout.trim();
 }
 
+function assertTrackedSourceClean() {
+  const result = spawnSync(
+    "git",
+    ["status", "--porcelain", "--untracked-files=no"],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    },
+  );
+  assert.equal(
+    result.status,
+    0,
+    `git status failed\n${result.stdout}\n${result.stderr}`,
+  );
+  assert.equal(
+    result.stdout.trim(),
+    "",
+    `Acceptance requires clean tracked source\n${result.stdout}`,
+  );
+}
+
 async function isolatedPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
@@ -131,6 +152,8 @@ export async function withFreshProductionServer<T>(
 ): Promise<T> {
   loadEnvFile();
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL is required");
+  assertTrackedSourceClean();
+  const sourceCommit = currentCommit();
 
   const port = await isolatedPort();
   const appUrl = `http://127.0.0.1:${port}`;
@@ -159,19 +182,23 @@ export async function withFreshProductionServer<T>(
     NEXT_DIST_DIR: distDir,
   };
   const prismaBin = join(process.cwd(), "node_modules", "prisma", "build", "index.js");
+  const tsxBin = join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
   const nextBin = join(process.cwd(), "node_modules", "next", "dist", "bin", "next");
+  const readinessScript = join(process.cwd(), "scripts", "verify-blob-conversion.ts");
   let child: ChildProcess | undefined;
 
   try {
     await rm(distPath, { recursive: true, force: true });
     runNode(prismaBin, ["generate"], env);
+    runNode(tsxBin, [readinessScript], env);
     runNode(nextBin, ["build"], env);
+    assert.equal(currentCommit(), sourceCommit, "Source commit changed during build");
 
     const buildId = readFileSync(
       join(distPath, "BUILD_ID"),
       "utf8",
     ).trim();
-    const commit = currentCommit();
+    const commit = sourceCommit;
     let stdout = "";
     let stderr = "";
     child = spawn(
@@ -204,6 +231,12 @@ export async function withFreshProductionServer<T>(
   } finally {
     if (child) await stopServer(child);
     await rm(distPath, { recursive: true, force: true });
+    assert.equal(
+      currentCommit(),
+      sourceCommit,
+      "Source commit changed during acceptance",
+    );
+    assertTrackedSourceClean();
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) {
         delete process.env[key];

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 
 import { Prisma } from "@prisma/client";
 import type { BetterAuthRateLimitStorage } from "@better-auth/core";
@@ -98,11 +99,31 @@ function hashedKey(scope: string, dimension: string, value: string): string {
 export function trustedProxyList(
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  return (
-    env.TRUSTED_PROXY_IPS?.split(",")
-      .map((value) => value.trim())
-      .filter(Boolean) ?? []
-  );
+  const raw = env.TRUSTED_PROXY_IPS?.trim() ?? "";
+  if (!raw) {
+    if (env.NODE_ENV === "production") {
+      throw new Error(
+        "TRUSTED_PROXY_IPS is required in production and must list the deployment proxy IPs or CIDR ranges",
+      );
+    }
+    return [];
+  }
+
+  const values = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  const invalid = values.filter((value) => {
+    const [address, prefix] = value.split("/");
+    const family = isIP(address ?? "");
+    if (!family) return true;
+    if (prefix === undefined) return false;
+    const bits = Number(prefix);
+    return !Number.isInteger(bits) || bits < 0 || bits > (family === 4 ? 32 : 128);
+  });
+  if (invalid.length > 0) {
+    throw new Error(
+      `TRUSTED_PROXY_IPS contains invalid proxy addresses: ${invalid.join(", ")}`,
+    );
+  }
+  return values;
 }
 
 export function requestIp(

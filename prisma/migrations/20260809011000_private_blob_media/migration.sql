@@ -3,15 +3,32 @@ DECLARE
   unsupported_urls text;
   ownership_mismatches text;
   duplicate_urls text;
+  owned_hosts text[];
 BEGIN
+  owned_hosts := ARRAY(
+    SELECT trim(host)
+      FROM unnest(
+        string_to_array(
+          coalesce(
+            current_setting('placedecide.legacy_blob_store_hosts', true),
+            ''
+          ),
+          ','
+        )
+      ) AS host
+     WHERE trim(host) <> ''
+  );
+
   SELECT string_agg(image."id" || '=' || image."url", ', ' ORDER BY image."id")
     INTO unsupported_urls
     FROM "SavedPlaceImage" image
-   WHERE image."url" !~ '^https://[a-z0-9-]+\.(public|private)\.blob\.vercel-storage\.com/.+\.(jpg|jpeg|png|webp)$';
+   WHERE image."url" !~ '^https://[^/]+/.+'
+      OR coalesce(array_length(owned_hosts, 1), 0) = 0
+      OR NOT (split_part(image."url", '/', 3) = ANY(owned_hosts));
 
   IF unsupported_urls IS NOT NULL THEN
     RAISE EXCEPTION
-      'Unsupported SavedPlaceImage URL. Migration cannot invent Blob ownership for external objects: %',
+      'Unsupported or foreign SavedPlaceImage URL. Migration requires exact owned legacy Blob hosts configured in placedecide.legacy_blob_store_hosts; conversion cannot invent ownership: %',
       unsupported_urls;
   END IF;
 
@@ -52,7 +69,8 @@ ALTER TABLE "BlobUpload"
   ADD COLUMN "sourceUrl" TEXT,
   ADD COLUMN "leaseUntil" TIMESTAMP(3),
   ADD COLUMN "deleteAttempts" INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN "lastError" TEXT;
+  ADD COLUMN "lastError" TEXT,
+  ADD COLUMN "contentType" TEXT;
 
 CREATE UNIQUE INDEX "BlobUpload_sourceUrl_key" ON "BlobUpload"("sourceUrl");
 CREATE INDEX "BlobUpload_lifecycle_leaseUntil_idx" ON "BlobUpload"("lifecycle", "leaseUntil");
@@ -83,6 +101,7 @@ INSERT INTO "BlobUpload" (
   "url",
   "sourceUrl",
   "pathname",
+  "contentType",
   "lifecycle",
   "createdAt",
   "updatedAt"
@@ -90,26 +109,11 @@ INSERT INTO "BlobUpload" (
 SELECT
   'legacy-' || md5(image."id" || ':' || image."url"),
   saved."userId",
-  CASE
-    WHEN image."url" ~ '\.private\.blob\.vercel-storage\.com/' THEN image."url"
-    ELSE NULL
-  END,
-  CASE
-    WHEN image."url" ~ '\.public\.blob\.vercel-storage\.com/' THEN image."url"
-    ELSE NULL
-  END,
-  CASE
-    WHEN image."url" ~ '\.private\.blob\.vercel-storage\.com/'
-      THEN regexp_replace(image."url", '^https://[^/]+/', '')
-    ELSE
-      'places/' || saved."userId" || '/legacy/' || image."id" || '.' ||
-      lower(substring(image."url" from '\.([A-Za-z0-9]+)$'))
-  END,
-  CASE
-    WHEN image."url" ~ '\.private\.blob\.vercel-storage\.com/'
-      THEN 'CLAIMED'::"BlobLifecycle"
-    ELSE 'PENDING_PRIVATE_COPY'::"BlobLifecycle"
-  END,
+  NULL,
+  image."url",
+  'places/' || saved."userId" || '/legacy/' || image."id",
+  NULL,
+  'PENDING_PRIVATE_COPY'::"BlobLifecycle",
   CURRENT_TIMESTAMP,
   CURRENT_TIMESTAMP
 FROM "SavedPlaceImage" image
@@ -128,23 +132,15 @@ UPDATE "BlobUpload" blob
 SET
   "sourceUrl" = blob."url",
   "url" = NULL,
-  "pathname" =
-    'places/' || saved."userId" || '/legacy/' || image."id" || '.' ||
-    lower(substring(image."url" from '\.([A-Za-z0-9]+)$')),
+  "pathname" = 'places/' || saved."userId" || '/legacy/' || image."id",
+  "contentType" = NULL,
   "lifecycle" = 'PENDING_PRIVATE_COPY',
   "updatedAt" = CURRENT_TIMESTAMP
 FROM "SavedPlaceImage" image
 JOIN "UserSavedPlace" saved ON saved."id" = image."savedPlaceId"
 WHERE image."blobUploadId" = blob."id"
-  AND blob."url" ~ '\.public\.blob\.vercel-storage\.com/';
-
-UPDATE "BlobUpload" blob
-SET
-  "lifecycle" = 'CLAIMED',
-  "updatedAt" = CURRENT_TIMESTAMP
-FROM "SavedPlaceImage" image
-WHERE image."blobUploadId" = blob."id"
-  AND blob."url" ~ '\.private\.blob\.vercel-storage\.com/';
+  AND image."url" ~ '^https://[^/]+/.+'
+  AND blob."url" IS NOT NULL;
 
 UPDATE "SavedPlaceImage" image
 SET "url" = '/api/media/' || image."blobUploadId";

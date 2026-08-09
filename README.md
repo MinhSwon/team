@@ -18,6 +18,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/placedecide?schema=pu
 BETTER_AUTH_SECRET=replace-with-at-least-32-random-characters
 BETTER_AUTH_URL=http://localhost:3000
 TRUSTED_PROXY_IPS=
+LEGACY_BLOB_STORE_HOSTS=
 GOOGLE_MAPS_API_KEY=
 BLOB_READ_WRITE_TOKEN=
 ```
@@ -26,9 +27,13 @@ BLOB_READ_WRITE_TOKEN=
 - `BETTER_AUTH_SECRET` is required and must contain at least 32 random
   characters.
 - `BETTER_AUTH_URL` is required and must match application origin.
-- `TRUSTED_PROXY_IPS` is optional. Set exact proxy IPs or CIDR ranges,
-  comma-separated, only when direct access to the origin is blocked. Forwarded
-  IP headers are ignored unless this setting is present.
+- `TRUSTED_PROXY_IPS` must list exact deployment proxy IPs or CIDR ranges,
+  comma-separated, in production. Invalid or missing production values fail
+  startup. Test/development may leave it empty; Better Auth disables IP
+  tracking there instead of using one global fallback bucket. Forwarded IP
+  headers are ignored unless this setting is present.
+- `LEGACY_BLOB_STORE_HOSTS` lists exact owned public/private Blob hostnames,
+  comma-separated. Migration rejects missing or foreign hosts.
 - `GOOGLE_MAPS_API_KEY` is optional. Without it, place search and resolution
   fall back to local records or manual confirmation.
 - `BLOB_READ_WRITE_TOKEN` is optional. Set it to enable JPEG, PNG, and WebP
@@ -98,14 +103,29 @@ eligible. Existing supported public Vercel Blob images enter
 their public source deleted. Cleanup workers use leased claims so overlapping
 workers do not process one object concurrently.
 
-With `BLOB_READ_WRITE_TOKEN` configured, run until conversion and deletion
-queues are empty:
+Both public and private legacy images stay inaccessible in
+`PENDING_PRIVATE_COPY` until worker validates JPEG, PNG, or WebP magic bytes
+and a 5 MB bound. For existing social-schema databases, set
+`LEGACY_BLOB_STORE_HOSTS` and PostgreSQL setting
+`placedecide.legacy_blob_store_hosts` to the same exact host list before
+migration. Pass the PostgreSQL setting through the connection URL used by
+Prisma, for example:
+
+```dotenv
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/placedecide?schema=public&options=-c%20placedecide.legacy_blob_store_hosts%3Dstore-id.public.blob.vercel-storage.com%2Cstore-id.private.blob.vercel-storage.com
+LEGACY_BLOB_STORE_HOSTS=store-id.public.blob.vercel-storage.com,store-id.private.blob.vercel-storage.com
+```
+
+Required order: migrate, run cleanup until conversion has zero failures, run
+readiness check, then build/cut over.
 
 ```powershell
 npm run cleanup:blobs
+npm run verify:blob-conversion
 ```
 
-Provider deletion failures remain queued for a later retry.
+`npm run build` and `npm start` refuse readiness while conversion or failed
+conversion rows remain. Provider deletion failures remain queued for retry.
 
 ## Verification
 
@@ -155,4 +175,4 @@ Open `http://localhost:3000`.
 
 Google Places and Vercel Blob live success require real keys. Local acceptance
 uses provider fallback and no-image paths; staging verification with both keys
-is still required.
+is still required. No live provider success is claimed without keys.

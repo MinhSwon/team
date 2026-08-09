@@ -17,12 +17,17 @@ async function main() {
   try {
     const conversion = await convertLegacyBlobUploads({
       get: (url, options) => get(url, options),
-      put: (pathname, body, options) => put(pathname, body, options),
-      del: (url) => del(url, { token }),
+      put: (pathname, body, options) =>
+        put(pathname, Buffer.from(body), options),
+      del: (url, options) => del(url, { token, ...options }),
       token,
+      allowedHosts: (process.env.LEGACY_BLOB_STORE_HOSTS ?? "")
+        .split(",")
+        .map((host) => host.trim().toLowerCase())
+        .filter(Boolean),
     });
     const result = await cleanupBlobUploads({
-      del: (url) => del(url, { token }),
+      del: (url, options) => del(url, { token, ...options }),
     });
     console.log(
       `Blob cleanup: ${conversion.converted} converted, ${result.deleted} deleted, ${conversion.failed + result.failed} failed`,

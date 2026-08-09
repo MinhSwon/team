@@ -3,15 +3,32 @@ DECLARE
   unsupported_urls text;
   ownership_mismatches text;
   duplicate_urls text;
+  owned_hosts text[];
 BEGIN
+  owned_hosts := ARRAY(
+    SELECT trim(host)
+      FROM unnest(
+        string_to_array(
+          coalesce(
+            current_setting('placedecide.legacy_blob_store_hosts', true),
+            ''
+          ),
+          ','
+        )
+      ) AS host
+     WHERE trim(host) <> ''
+  );
+
   SELECT string_agg(image."id" || '=' || image."url", ', ' ORDER BY image."id")
     INTO unsupported_urls
     FROM "SavedPlaceImage" image
-   WHERE image."url" !~ '^https://[a-z0-9-]+\.(public|private)\.blob\.vercel-storage\.com/.+\.(jpg|jpeg|png|webp)$';
+   WHERE image."url" !~ '^https://[^/]+/.+'
+      OR coalesce(array_length(owned_hosts, 1), 0) = 0
+      OR NOT (split_part(image."url", '/', 3) = ANY(owned_hosts));
 
   IF unsupported_urls IS NOT NULL THEN
     RAISE EXCEPTION
-      'Unsupported SavedPlaceImage URL. Migration cannot invent Blob ownership for external objects: %',
+      'Unsupported or foreign SavedPlaceImage URL. Migration requires exact owned legacy Blob hosts configured in placedecide.legacy_blob_store_hosts; conversion cannot invent ownership: %',
       unsupported_urls;
   END IF;
 

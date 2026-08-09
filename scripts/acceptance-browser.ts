@@ -2,8 +2,15 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
-import type { Locator, Page } from "playwright-core";
+import type {
+  Browser,
+  BrowserContext,
+  Locator,
+  Page,
+} from "playwright-core";
+import type { PrismaClient } from "@prisma/client";
 
+import { closeBrowserResources } from "./acceptance-browser-resources";
 import { withFreshProductionServer } from "./acceptance-server";
 
 const criterionTotal = 14;
@@ -148,60 +155,70 @@ async function assertLayout(page: Page, mobile: boolean) {
 
 async function runBrowserAcceptance(appUrl: string) {
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL is required");
-  const {
-    createAcceptanceIp,
-    demoUsers,
-    prepareAcceptanceDatabase,
-    seedDemoUsers,
-  } = await import("./acceptance-support");
-  seedDemoUsers();
-  const { prisma } = await import("../src/lib/db");
-  const { chromium } = await import("playwright-core");
-  const users = await prepareAcceptanceDatabase(prisma);
-  const browser = await chromium.launch({
-    executablePath: browserPath(),
-    headless: true,
-  });
-  const acceptanceIp = createAcceptanceIp();
-  const contexts = await Promise.all(
-    [...demoUsers, null].map(() =>
-      browser.newContext({
-        baseURL: appUrl,
-        extraHTTPHeaders: { "x-forwarded-for": acceptanceIp },
-      }),
-    ),
-  );
-  const [alice, bob, carol, fresh] = await Promise.all(
-    contexts.map((context) => context.newPage()),
-  );
-  const results: Array<{ name: string; error?: string }> = [];
-  let friendshipId: string | undefined;
-  let manualSavedId: string | undefined;
-  let manualPlaceId: string | undefined;
-  let manualPostId: string | undefined;
-  let bobSavedId: string | undefined;
-  let bobPostId: string | undefined;
-  let searchPlaceId: string | undefined;
-  const freshSuffix = randomUUID().replaceAll("-", "").slice(0, 12);
-  const freshEmail = `acceptance-${freshSuffix}@example.com`;
-
-  async function criterion(
-    index: number,
-    name: string,
-    operation: () => Promise<void>,
-  ) {
-    try {
-      await operation();
-      results.push({ name });
-      console.log(`PASS ${index}/${criterionTotal} ${name}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      results.push({ name, error: message });
-      console.error(`FAIL ${index}/${criterionTotal} ${name}: ${message}`);
-    }
-  }
+  let cleanupPrisma: PrismaClient | undefined;
+  let cleanupBrowser: Browser | undefined;
+  let cleanupContexts: BrowserContext[] = [];
+  let cleanupFreshEmail: string | undefined;
 
   try {
+    const {
+      createAcceptanceIp,
+      demoUsers,
+      prepareAcceptanceDatabase,
+      seedDemoUsers,
+    } = await import("./acceptance-support");
+    seedDemoUsers();
+    const { prisma } = await import("../src/lib/db");
+    cleanupPrisma = prisma;
+    const { chromium } = await import("playwright-core");
+    const users = await prepareAcceptanceDatabase(prisma);
+    const browser = await chromium.launch({
+      executablePath: browserPath(),
+      headless: true,
+    });
+    cleanupBrowser = browser;
+    const acceptanceIp = createAcceptanceIp();
+    const contexts: BrowserContext[] = [];
+    cleanupContexts = contexts;
+    for (let index = 0; index < demoUsers.length + 1; index += 1) {
+      contexts.push(
+        await browser.newContext({
+          baseURL: appUrl,
+          extraHTTPHeaders: { "x-forwarded-for": acceptanceIp },
+        }),
+      );
+    }
+    const [alice, bob, carol, fresh] = await Promise.all(
+      contexts.map((context) => context.newPage()),
+    );
+    const results: Array<{ name: string; error?: string }> = [];
+    let friendshipId: string | undefined;
+    let manualSavedId: string | undefined;
+    let manualPlaceId: string | undefined;
+    let manualPostId: string | undefined;
+    let bobSavedId: string | undefined;
+    let bobPostId: string | undefined;
+    let searchPlaceId: string | undefined;
+    const freshSuffix = randomUUID().replaceAll("-", "").slice(0, 12);
+    const freshEmail = `acceptance-${freshSuffix}@example.com`;
+    cleanupFreshEmail = freshEmail;
+
+    async function criterion(
+      index: number,
+      name: string,
+      operation: () => Promise<void>,
+    ) {
+      try {
+        await operation();
+        results.push({ name });
+        console.log(`PASS ${index}/${criterionTotal} ${name}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        results.push({ name, error: message });
+        console.error(`FAIL ${index}/${criterionTotal} ${name}: ${message}`);
+      }
+    }
+
     await criterion(1, "fresh registration and demo users sign in through UI", async () => {
       await fresh.goto(`${appUrl}/register`);
       await fresh
@@ -818,10 +835,12 @@ async function runBrowserAcceptance(appUrl: string) {
     );
     if (failures.length > 0) process.exitCode = 1;
   } finally {
-    await Promise.all(contexts.map((context) => context.close()));
-    await browser.close();
-    await prisma.user.deleteMany({ where: { email: freshEmail } });
-    await prisma.$disconnect();
+    await closeBrowserResources({
+      contexts: cleanupContexts,
+      browser: cleanupBrowser,
+      prisma: cleanupPrisma,
+      freshEmail: cleanupFreshEmail,
+    });
   }
 }
 

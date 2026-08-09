@@ -175,6 +175,7 @@ model BlobUpload {
   url            String?          @unique
   sourceUrl      String?          @unique
   pathname       String           @unique
+  contentType    String?
   lifecycle      BlobLifecycle    @default(RESERVED)
   leaseUntil     DateTime?
   deleteAttempts Int              @default(0)

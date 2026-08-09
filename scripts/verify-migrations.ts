@@ -82,6 +82,9 @@ async function applyPrePrivateMigrations(schema: string) {
 }
 
 async function applyPrivateMigration(client: PoolClient) {
+  await client.query(
+    "SET placedecide.legacy_blob_store_hosts = 'store.private.blob.vercel-storage.com,store.public.blob.vercel-storage.com'",
+  );
   await client.query(privateEnumMigration);
   await client.query(privateMediaMigration);
 }
@@ -147,6 +150,19 @@ async function main() {
     for (const table of ["User", "Place", "UserSavedPlace", "BlobUpload"]) {
       assert.ok(freshTables.includes(table), `fresh schema missing ${table}`);
     }
+    assert.equal(
+      (
+        await pool.query<{ count: string }>(
+          `SELECT count(*)::text AS count
+             FROM information_schema.columns
+            WHERE table_schema = $1
+              AND table_name = 'BlobUpload'
+              AND column_name = 'contentType'`,
+          [schemas[0]],
+        )
+      ).rows[0]?.count,
+      "1",
+    );
     console.log("PASS fresh temporary schema migration");
 
     await pool.query(
@@ -237,15 +253,15 @@ async function main() {
       assert.ok(privateRow && publicRow);
 
       assert.equal(privateRow.ownerId, privateFixture.userId);
-      assert.equal(privateRow.lifecycle, "CLAIMED");
-      assert.equal(privateRow.blobUrl, privateFixture.url);
-      assert.equal(privateRow.sourceUrl, null);
+      assert.equal(privateRow.lifecycle, "PENDING_PRIVATE_COPY");
+      assert.equal(privateRow.blobUrl, null);
+      assert.equal(privateRow.sourceUrl, privateFixture.url);
       assert.equal(
         privateRow.imageUrl,
         `/api/media/${privateRow.blobUploadId}`,
       );
       console.log(
-        "PASS private Blob image backfills exact owner and claimed lifecycle",
+        "PASS private Blob image backfills exact owner and pending verified conversion",
       );
 
       assert.equal(publicRow.ownerId, publicFixture.userId);
@@ -254,7 +270,7 @@ async function main() {
       assert.equal(publicRow.sourceUrl, publicFixture.url);
       assert.equal(
         publicRow.pathname,
-        "places/user-public/legacy/image-public.webp",
+        "places/user-public/legacy/image-public",
       );
       assert.equal(
         publicRow.imageUrl,
@@ -277,7 +293,7 @@ async function main() {
       );
       await assert.rejects(
         applyPrivateMigration(unsupported),
-        /Unsupported SavedPlaceImage URL/,
+        /Unsupported or foreign SavedPlaceImage URL/,
       );
       const image = await unsupported.query<{
         url: string;

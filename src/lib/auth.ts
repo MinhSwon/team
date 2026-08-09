@@ -34,6 +34,7 @@ export const auth = betterAuth({
   },
   advanced: {
     ipAddress: {
+      disableIpTracking: trustedProxies.length === 0,
       ipAddressHeaders:
         trustedProxies.length > 0
           ? ["x-forwarded-for", "x-real-ip"]

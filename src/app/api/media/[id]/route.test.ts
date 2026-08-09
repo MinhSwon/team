@@ -13,7 +13,12 @@ test("private media proxy authorizes every read and disables shared caching", as
   const dependencies = {
     requireUser: async () => ({ id: "viewer-1" }),
     findVisibleUpload: async () =>
-      visible ? { pathname: "places/owner-1/upload-1.webp" } : null,
+      visible
+        ? {
+            pathname: "places/owner-1/upload-1.webp",
+            contentType: "image/webp" as const,
+          }
+        : null,
     get: async (
       pathname: string,
       options: {
