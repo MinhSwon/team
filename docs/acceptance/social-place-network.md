@@ -5,15 +5,15 @@ Date: 2026-08-09
 Status: **COMPLETE**
 
 Application code HEAD tested:
-`f5958fe7d2eefa00c7953dc4f39764d895bbf8a5`
-(`fix blob delete claim race atomically`)
+`3db9fa54ecb9c0973f6588b72c3188a7ec7aa6ef`
+(`fix saved place update delete blob race`)
 
 Fresh production acceptance identities:
 
-- HTTP: build `YIcA7uHmzCJidMs-RCqlw`, commit
-  `f5958fe7d2eefa00c7953dc4f39764d895bbf8a5`, isolated port `53161`
-- Browser: build `w6xsIntDf56vcvEJ0oyEE`, commit
-  `f5958fe7d2eefa00c7953dc4f39764d895bbf8a5`, isolated port `49871`
+- HTTP: build `a-ghB0YRV6CuOJRjbf7Bg`, commit
+  `3db9fa54ecb9c0973f6588b72c3188a7ec7aa6ef`, isolated port `60070`
+- Browser: build `lTXA9iLxrkDA5whhO7qAS`, commit
+  `3db9fa54ecb9c0973f6588b72c3188a7ec7aa6ef`, isolated port `58309`
 
 Both harnesses generated a new production build, started `next start` on an
 isolated port, asserted the current Git commit, and removed
@@ -25,10 +25,10 @@ isolated port, asserted the current Git commit, and removed
 - Applied migrations: **6**, current database up to date
 - Blob conversion readiness: **PASS**, no pending or failed rows
 - Seed runs: **2**, each verified **3 credential sign-ins**
-- Live PostgreSQL race proofs: **4 PASS, 0 FAIL**
-- Unit/domain/API tests: **182 PASS, 0 FAIL**
+- Live PostgreSQL race proofs: **5 PASS, 0 FAIL**
+- Unit/domain/API tests: **183 PASS, 0 FAIL**
 - Lint: **PASS**, no diagnostics
-- Production build: **PASS**, build ID `sb9qysBw99UvHBGuyNAyT`
+- Production build: **PASS**, build ID `yOtb7iUqxm8RP2K7rxVFp`
 - React Doctor changed scope: **100/100**, 96 files, no issues
 - HTTP/API acceptance: **12 PASS, 0 FAIL**
 - Browser acceptance: **14 PASS, 0 FAIL**
