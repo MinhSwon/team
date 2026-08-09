@@ -936,6 +936,27 @@ test("post detail allows owner and accepted friends, then excludes removed frien
   );
 });
 
+test("post detail returns not-found when friendship disappears before detail query", async () => {
+  const persistence = new FakePostsPersistence();
+  persistence.seedPost("user-b", "raced-post", createdAt);
+  persistence.addFriendship("user-a", "user-b", "ACCEPTED");
+  const findPostDetail = persistence.findPostDetail.bind(persistence);
+
+  persistence.findPostDetail = async (userId, postId) => {
+    persistence.removeFriendship("user-a", "user-b");
+    return findPostDetail(userId, postId);
+  };
+
+  await assert.rejects(
+    getPostDetail("user-a", "raced-post", persistence),
+    (error: unknown) =>
+      error instanceof PostError &&
+      error.code === "NOT_FOUND" &&
+      error.status === 404 &&
+      error.message === "Post not found",
+  );
+});
+
 test("delete saved place rejects non-author without changing state", async () => {
   const persistence = new FakePostsPersistence();
   persistence.seedPost("user-a", "post-1", createdAt, "place-1");

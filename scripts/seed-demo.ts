@@ -1,66 +1,33 @@
 import assert from "node:assert/strict";
 import { loadEnvFile } from "node:process";
 
-const demoUsers = [
-  {
-    name: "Demo Alice",
-    email: "alice@placedecide.local",
-    username: "demo.alice",
-    password: "DemoAlice!2026",
-  },
-  {
-    name: "Demo Bob",
-    email: "bob@placedecide.local",
-    username: "demo.bob",
-    password: "DemoBob!2026",
-  },
-] as const;
-
 async function main() {
   loadEnvFile();
-  const [{ auth }, { prisma }, { friendPairKey }] = await Promise.all([
+  const [
+    { auth },
+    { prisma },
+    { demoUsers, demoUserSelector },
+    { friendPairKey },
+  ] = await Promise.all([
     import("../src/lib/auth"),
     import("../src/lib/db"),
+    import("../src/lib/demo-users"),
     import("../src/lib/friendships"),
   ]);
 
   try {
-    async function ensureUser(input: (typeof demoUsers)[number]) {
-      const existing = await prisma.user.findFirst({
-        where: {
-          OR: [{ email: input.email }, { username: input.username }],
-        },
-      });
+    await prisma.user.deleteMany({ where: demoUserSelector });
 
-      if (existing) {
-        assert.equal(
-          existing.email,
-          input.email,
-          `${input.username} email conflict`,
-        );
-        assert.equal(
-          existing.username,
-          input.username,
-          `${input.email} username conflict`,
-        );
-        return existing;
-      }
-
+    const users: { id: string }[] = [];
+    for (const input of demoUsers) {
       const result = await auth.api.signUpEmail({ body: input });
-      return result.user;
+      users.push(result.user);
     }
 
-    const alice = await ensureUser(demoUsers[0]);
-    const bob = await ensureUser(demoUsers[1]);
+    const [alice, bob] = users;
     const pairKey = friendPairKey(alice.id, bob.id);
-    const friendship = await prisma.friendship.upsert({
-      where: { pairKey },
-      update: {
-        requesterId: alice.id,
-        addresseeId: bob.id,
-        status: "ACCEPTED",
-      },
-      create: {
+    const friendship = await prisma.friendship.create({
+      data: {
         requesterId: alice.id,
         addresseeId: bob.id,
         pairKey,
@@ -69,27 +36,42 @@ async function main() {
     });
     const credentialAccounts = await prisma.account.count({
       where: {
-        userId: { in: [alice.id, bob.id] },
+        userId: { in: users.map(({ id }) => id) },
         providerId: "credential",
       },
     });
 
     assert.equal(
       credentialAccounts,
-      2,
+      demoUsers.length,
       "Better Auth credential accounts missing",
     );
     assert.equal(friendship.status, "ACCEPTED");
 
+    for (const [index, credentials] of demoUsers.entries()) {
+      const signedIn = await auth.api.signInEmail({
+        body: {
+          email: credentials.email,
+          password: credentials.password,
+        },
+      });
+      assert.equal(
+        signedIn.user.id,
+        users[index].id,
+        `${credentials.email} sign-in returned wrong user`,
+      );
+    }
+
     console.table(
       demoUsers.map((user, index) => ({
-        id: index === 0 ? alice.id : bob.id,
+        id: users[index].id,
         email: user.email,
         username: user.username,
         password: user.password,
       })),
     );
     console.log(`Accepted friendship: ${friendship.id}`);
+    console.log(`Verified credential sign-ins: ${demoUsers.length}`);
   } finally {
     await prisma.$disconnect();
   }

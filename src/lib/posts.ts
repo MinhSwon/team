@@ -137,7 +137,6 @@ export interface PostsPersistence {
   ): Promise<{ savedPlace: UserSavedPlace; post: Post } | null>;
   findSavedPlaceById(id: string): Promise<UserSavedPlace | null>;
   findFeedPosts(query: FeedQuery): Promise<FeedPost[]>;
-  assertCanViewPost(userId: string, postId: string): Promise<void>;
   findPostDetail(
     userId: string,
     postId: string,
@@ -530,9 +529,6 @@ const defaultPersistence: PostsPersistence = {
     });
     return posts.map(feedPost);
   },
-  assertCanViewPost: async (userId, postId) => {
-    await assertCanViewPost(userId, postId);
-  },
   findPostDetail: async (userId, postId) => {
     const post = await prisma.post.findFirst({
       where: {
@@ -756,10 +752,9 @@ export async function getPostDetail(
   postId: string,
   persistence: PostsPersistence = defaultPersistence,
 ): Promise<FeedPost> {
-  await persistence.assertCanViewPost(userId, postId);
   const post = await persistence.findPostDetail(userId, postId);
   if (!post) {
-    throw new PostError("You cannot view this post", "FORBIDDEN", 403);
+    throw new PostError("Post not found", "NOT_FOUND", 404);
   }
   return post;
 }
