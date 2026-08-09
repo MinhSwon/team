@@ -1,6 +1,7 @@
 "use client";
 
 import { MapPin, Pencil, Search, Star, Trash2 } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
@@ -125,14 +126,15 @@ export default function SavedPlacesClient({
               key={item.id}
             >
               <Link
-                className="block aspect-[4/3] overflow-hidden rounded-md bg-slate-900"
+                className="relative block aspect-[4/3] overflow-hidden rounded-md bg-slate-900"
                 href={`/places/${item.place.id}`}
               >
                 {item.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
+                  <Image
                     alt=""
-                    className="h-full w-full object-cover"
+                    className="object-cover"
+                    fill
+                    sizes="(min-width: 640px) 6rem, 100vw"
                     src={item.imageUrl}
                   />
                 ) : (

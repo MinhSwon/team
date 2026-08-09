@@ -79,21 +79,23 @@ export async function cleanupBlobUploads({
     new Date(now.getTime() - 24 * 60 * 60 * 1000),
     take,
   );
-  let deleted = 0;
-  let failed = 0;
+  const outcomes = await Promise.all(
+    candidates.map(async (candidate) => {
+      if (!(await store.markPendingDelete(candidate.id))) return null;
+      try {
+        await del(candidate.url);
+        await store.deleteRecord(candidate.id);
+        return "deleted" as const;
+      } catch {
+        return "failed" as const;
+      }
+    }),
+  );
 
-  for (const candidate of candidates) {
-    if (!(await store.markPendingDelete(candidate.id))) continue;
-    try {
-      await del(candidate.url);
-      await store.deleteRecord(candidate.id);
-      deleted += 1;
-    } catch {
-      failed += 1;
-    }
-  }
-
-  return { deleted, failed };
+  return {
+    deleted: outcomes.filter((outcome) => outcome === "deleted").length,
+    failed: outcomes.filter((outcome) => outcome === "failed").length,
+  };
 }
 
 export function isBlobLifecycle(

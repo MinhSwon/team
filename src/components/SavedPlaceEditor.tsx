@@ -2,7 +2,7 @@
 
 import { LoaderCircle, Save, Star, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useReducer } from "react";
 import type { FormEvent } from "react";
 
 import { PLACE_LIMITS } from "@/lib/validation";
@@ -16,6 +16,16 @@ type SavedState = {
   status: SavedPlaceStatus;
 };
 
+type EditorState = {
+  saved: SavedState | null;
+  rating: number | null;
+  review: string;
+  tags: string;
+  status: SavedPlaceStatus;
+  busy: "save" | "remove" | null;
+  error: string;
+};
+
 type CanonicalPlace = {
   id: string;
   name: string;
@@ -25,6 +35,25 @@ type CanonicalPlace = {
   longitude: number | null;
   website: string | null;
 };
+
+function createEditorState(saved: SavedState | null): EditorState {
+  return {
+    saved,
+    rating: saved?.rating ?? null,
+    review: saved?.review ?? "",
+    tags: saved?.tags.join(", ") ?? "",
+    status: saved?.status ?? "SAVED",
+    busy: null,
+    error: "",
+  };
+}
+
+function updateEditorState(
+  state: EditorState,
+  update: Partial<EditorState>,
+): EditorState {
+  return { ...state, ...update };
+}
 
 async function jsonRequest<T>(url: string, init: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -50,29 +79,28 @@ export default function SavedPlaceEditor({
   initialSave: SavedState | null;
 }) {
   const router = useRouter();
-  const [saved, setSaved] = useState(initialSave);
-  const [rating, setRating] = useState(initialSave?.rating ?? null);
-  const [review, setReview] = useState(initialSave?.review ?? "");
-  const [tags, setTags] = useState(initialSave?.tags.join(", ") ?? "");
-  const [status, setStatus] = useState<SavedPlaceStatus>(
-    initialSave?.status ?? "SAVED",
-  );
-  const [busy, setBusy] = useState<"save" | "remove" | null>(null);
-  const [error, setError] = useState("");
+  const [{ saved, rating, review, tags, status, busy, error }, updateState] =
+    useReducer(
+      updateEditorState,
+      initialSave,
+      createEditorState,
+    );
 
   function payload() {
     return {
       rating,
       review,
-      tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+      tags: tags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
       status,
     };
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusy("save");
-    setError("");
+    updateState({ busy: "save", error: "" });
     try {
       const result = saved
         ? await jsonRequest<{ savedPlace: SavedState }>(
@@ -99,14 +127,14 @@ export default function SavedPlaceEditor({
               sourcePostId: null,
             }),
           });
-      setSaved(result.savedPlace);
+      updateState({ saved: result.savedPlace });
       router.refresh();
     } catch (nextError) {
-      setError(
-        nextError instanceof Error ? nextError.message : "Save failed",
-      );
+      updateState({
+        error: nextError instanceof Error ? nextError.message : "Save failed",
+      });
     } finally {
-      setBusy(null);
+      updateState({ busy: null });
     }
   }
 
@@ -114,22 +142,18 @@ export default function SavedPlaceEditor({
     if (!saved || !window.confirm(`Remove ${place.name} from saved places?`)) {
       return;
     }
-    setBusy("remove");
-    setError("");
+    updateState({ busy: "remove", error: "" });
     try {
       await jsonRequest(`/api/saved/${saved.id}`, { method: "DELETE" });
-      setSaved(null);
-      setRating(null);
-      setReview("");
-      setTags("");
-      setStatus("SAVED");
+      updateState(createEditorState(null));
       router.refresh();
     } catch (nextError) {
-      setError(
-        nextError instanceof Error ? nextError.message : "Remove failed",
-      );
+      updateState({
+        error:
+          nextError instanceof Error ? nextError.message : "Remove failed",
+      });
     } finally {
-      setBusy(null);
+      updateState({ busy: null });
     }
   }
 
@@ -150,7 +174,9 @@ export default function SavedPlaceEditor({
                   : "bg-slate-900 text-slate-500 hover:text-amber-400"
               }`}
               key={value}
-              onClick={() => setRating(rating === value ? null : value)}
+              onClick={() =>
+                updateState({ rating: rating === value ? null : value })
+              }
               type="button"
             >
               <Star className="h-4 w-4" />
@@ -170,7 +196,7 @@ export default function SavedPlaceEditor({
           className="min-h-24 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none focus:border-amber-400"
           id="saved-review"
           maxLength={PLACE_LIMITS.review}
-          onChange={(event) => setReview(event.target.value)}
+          onChange={(event) => updateState({ review: event.target.value })}
           value={review}
         />
       </div>
@@ -186,7 +212,7 @@ export default function SavedPlaceEditor({
           <input
             className="min-h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-amber-400"
             id="saved-tags"
-            onChange={(event) => setTags(event.target.value)}
+            onChange={(event) => updateState({ tags: event.target.value })}
             placeholder="coffee, quiet"
             value={tags}
           />
@@ -202,7 +228,9 @@ export default function SavedPlaceEditor({
             className="min-h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-amber-400"
             id="saved-status"
             onChange={(event) =>
-              setStatus(event.target.value as SavedPlaceStatus)
+              updateState({
+                status: event.target.value as SavedPlaceStatus,
+              })
             }
             value={status}
           >

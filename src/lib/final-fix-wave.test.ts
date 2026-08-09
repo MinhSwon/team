@@ -215,6 +215,42 @@ test("Blob cleanup retains failures and removes successful or expired records", 
   assert.deepEqual(result, { deleted: 2, failed: 1 });
 });
 
+test("Blob cleanup starts independent provider deletes concurrently", async () => {
+  const blobs = await import("./blob-uploads");
+  let started = 0;
+  let startedAtRelease = 0;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const candidates = ["one", "two", "three"].map((id) => ({
+    id,
+    url: `https://blob.example/${id}.webp`,
+    lifecycle: "PENDING_DELETE" as const,
+    createdAt: new Date("2026-08-09T00:00:00.000Z"),
+  }));
+  const timer = setTimeout(() => {
+    startedAtRelease = started;
+    release();
+  }, 20);
+
+  const result = await blobs.cleanupBlobUploads({
+    store: {
+      listCleanupCandidates: async () => candidates,
+      markPendingDelete: async () => true,
+      deleteRecord: async () => {},
+    },
+    del: async () => {
+      started += 1;
+      await gate;
+    },
+  });
+  clearTimeout(timer);
+
+  assert.equal(startedAtRelease, candidates.length);
+  assert.deepEqual(result, { deleted: candidates.length, failed: 0 });
+});
+
 test("manual local search receives viewer identity", async () => {
   type ViewerStore = PlaceStore & { seenViewer?: string };
   const store: ViewerStore = {
