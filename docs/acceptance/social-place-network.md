@@ -5,15 +5,15 @@ Date: 2026-08-09
 Status: **COMPLETE**
 
 Application code HEAD tested:
-`02858b6501dc950b3cad8c345968cea449d2f253`
+`1cbec8f4db4d855c601a1d26fb0221d38b9be005`
 (`fix: harden private media migration and acceptance`)
 
 Fresh production acceptance identities:
 
-- HTTP: build `Px8LSbHO3yTxHF9WziBeD`, commit
-  `02858b6501dc950b3cad8c345968cea449d2f253`, isolated port `55808`
-- Browser: build `2IZ5sNXQm-7fBW0IhwZEc`, commit
-  `02858b6501dc950b3cad8c345968cea449d2f253`, isolated port `64980`
+- HTTP: build `ZbahTCCDb1jyNliL4gvqz`, commit
+  `1cbec8f4db4d855c601a1d26fb0221d38b9be005`, isolated port `52856`
+- Browser: build `oqv2ZnHgpo4hIc36ycxUW`, commit
+  `1cbec8f4db4d855c601a1d26fb0221d38b9be005`, isolated port `57853`
 
 Both harnesses generated a new production build, started `next start` on an
 isolated port, asserted the current Git commit, and removed
@@ -21,15 +21,15 @@ isolated port, asserted the current Git commit, and removed
 
 ## Totals
 
-- Migration proofs: **5 PASS, 0 FAIL**
+- Migration proofs: **8 PASS, 0 FAIL**
 - Applied migrations: **6**, current database up to date
 - Blob conversion readiness: **PASS**, no pending or failed rows
 - Seed runs: **2**, each verified **3 credential sign-ins**
 - Live PostgreSQL race proofs: **2 PASS, 0 FAIL**
-- Unit/domain/API tests: **170 PASS, 0 FAIL**
+- Unit/domain/API tests: **180 PASS, 0 FAIL**
 - Lint: **PASS**, no diagnostics
-- Production build: **PASS**, build ID `Xb_KXteqNoYRLrHihVEzq`
-- React Doctor changed scope: **100/100**, 90 files, no issues
+- Production build: **PASS**, build ID `lpN5Bn9IiQ5-9rpRyO-yI`
+- React Doctor changed scope: **100/100**, 92 files, no issues
 - HTTP/API acceptance: **12 PASS, 0 FAIL**
 - Browser acceptance: **14 PASS, 0 FAIL**
 - Combined acceptance criteria: **26 PASS, 0 FAIL**
@@ -53,6 +53,9 @@ PASS representative legacy schema rejected before social tables with mapped-tabl
 PASS private Blob image backfills exact owner and pending verified conversion
 PASS public Blob image enters durable private-copy ledger
 PASS unsupported external image aborts before schema or data mutation
+PASS prior private Blob states preserve public references
+PASS hardening rejects foreign and ambiguous prior Blob states before mutation
+PASS Blob readiness rejects surviving public references
 ```
 
 Current database result:
@@ -85,6 +88,12 @@ external URLs abort before schema or data mutation. Supported legacy rows enter
 `PENDING_PRIVATE_COPY`; cleanup validates a 5 MB bound and JPEG/PNG/WebP magic
 before private copy and public-source deletion.
 
+Private-media migrations are unreleased feature-branch history. The corrected
+`20260809012000_private_blob_hardening` migration validates both `url` and
+`sourceUrl` without rewriting conversion state. The current development
+database used the explicit guarded checksum repair only after proving zero
+`BlobUpload` and zero `SavedPlaceImage` rows.
+
 ## Seed
 
 Exact command:
@@ -112,6 +121,8 @@ Exact commands:
 npm run verify:races
 npm test
 npm run lint
+$env:TRUSTED_PROXY_IPS="127.0.0.1/32"
+npm run check:deployment
 npm run build
 npx react-doctor@latest --verbose --scope changed
 ```
@@ -119,12 +130,18 @@ npx react-doctor@latest --verbose --scope changed
 Actual results:
 
 - `npm run verify:races`: **2 passed, 0 failed**
-- `npm test`: **170 passed, 0 failed, 0 skipped**
+- `npm test`: **180 passed, 0 failed, 0 skipped**
 - `npm run lint`: exit 0, no diagnostics
+- `npm run check:deployment`: one valid direct-peer proxy entry
 - `npm run build`: Prisma Client `7.9.1`; Next.js `16.3.0`; compile,
   TypeScript, 23-page generation, and route finalization passed
-- Standard production build ID: `Xb_KXteqNoYRLrHihVEzq`
-- React Doctor: 90 changed-scope files, **100/100**, no issues
+- Standard production build ID: `lpN5Bn9IiQ5-9rpRyO-yI`
+- React Doctor: 92 changed-scope files, **100/100**, no issues
+
+An initial production build without `TRUSTED_PROXY_IPS` failed during API route
+configuration collection. This is expected fail-fast behavior. The verified
+local production build used explicit direct-peer trust
+`TRUSTED_PROXY_IPS=127.0.0.1/32`.
 
 Live race output:
 
@@ -163,10 +180,23 @@ PASS Comment race: serialized before removal
   limiter remains. Multi-instance atomic consumption is covered.
 - Production startup fails when `TRUSTED_PROXY_IPS` is missing or invalid.
   Proxy IP headers are ignored unless it explicitly lists trusted bare IPs or
-  CIDR ranges. Development/test disables Better Auth IP limiting when no
-  trusted proxy is configured, avoiding a shared global bucket.
+  CIDR ranges. Empty list entries, empty prefixes, extra slashes, malformed
+  addresses, and out-of-range prefixes are rejected. Development/test disables
+  Better Auth IP limiting when no trusted proxy is configured, avoiding a
+  shared global bucket.
 - `npm run cleanup:rate-limits` prunes expired buckets.
 - Profile updates reject non-null avatar values; UI uses initials fallback.
+- Better Auth signup trims and validates names to 1-80 characters and forces
+  `image: null` before database creation. Public social DTOs omit avatar/image.
+- Uploads reject declared multipart requests over 5 MiB plus 256 KiB before
+  `formData()`. Platform request-body limits remain required for missing or
+  chunked `Content-Length`.
+- Legacy conversion claims at most four rows and processes them sequentially.
+- Media reads pass a 30-second abort signal to the installed Blob SDK.
+- Saved-place image captions are capped at 300 characters server-side.
+- Acceptance rejects untracked files outside `.superpowers/sdd`, tolerates
+  synchronous teardown failures while completing later cleanup, restores
+  environment, removes `.next-acceptance`, and rechecks source commit/state.
 - Manual area is limited to 120 characters. Website and Maps URLs are limited
   to 2,048 characters. Website URLs require HTTPS and reject credentials.
   Latitude accepts `[-90, 90]`; longitude accepts `[-180, 180]`.
@@ -182,9 +212,10 @@ npm run acceptance:social
 Final output:
 
 ```text
-Fresh production server: build Px8LSbHO3yTxHF9WziBeD, commit 02858b6501dc950b3cad8c345968cea449d2f253, port 55808
+Fresh production server: build ZbahTCCDb1jyNliL4gvqz, commit 1cbec8f4db4d855c601a1d26fb0221d38b9be005, port 52856
 Verified credential sign-ins: 3
-Application: http://127.0.0.1:55808
+Direct auth signup sanitation: PASS
+Application: http://127.0.0.1:52856
 PASS 1/12 demo users sign in
 PASS 2/12 friend request is sent and accepted
 PASS 3/12 manual save creates exactly one post
@@ -211,7 +242,7 @@ npm run acceptance:browser
 Final output:
 
 ```text
-Fresh production server: build 2IZ5sNXQm-7fBW0IhwZEc, commit 02858b6501dc950b3cad8c345968cea449d2f253, port 64980
+Fresh production server: build oqv2ZnHgpo4hIc36ycxUW, commit 1cbec8f4db4d855c601a1d26fb0221d38b9be005, port 57853
 Verified credential sign-ins: 3
 PASS 1/14 fresh registration and demo users sign in through UI
 PASS 2/14 friend request is sent and accepted through UI
@@ -228,7 +259,7 @@ PASS 12/14 browser reload preserves saved data
 PASS 13/14 unsaved detail saves and removes canonical place in UI
 PASS 14/14 desktop and 375px mobile layout and keyboard controls pass
 Browser: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
-Application: http://127.0.0.1:64980
+Application: http://127.0.0.1:57853
 Acceptance total: 14 PASS, 0 FAIL
 ```
 
@@ -242,6 +273,14 @@ visible UI exists.
 
 ## TDD Regression Evidence
 
+- Third-wave initial focused RED: **80 passed, 8 failed**.
+- Media-specific RED: **19 passed, 1 failed**.
+- Migration verifier RED reproduced public-reference loss for
+  `CONVERTING` after private copy and `PENDING_PUBLIC_DELETE`.
+- Pre-final focused GREEN: **89 passed, 0 failed**.
+- Self-review RED for strict empty proxy entries and synchronous cleanup:
+  **49 passed, 3 failed**.
+- Self-review GREEN: **52 passed, 0 failed**.
 - Initial second-review focused suite: **24 passed, 13 failed**.
 - Self-review focused RED:
   `npx tsx --import ./scripts/test-env.ts --test src/lib/final-fix-wave.test.ts`
@@ -262,7 +301,7 @@ visible UI exists.
 
 Tracked-file scan:
 
-- `TRACKED_FILES=344`
+- `TRACKED_FILES=346`
 - `ARTIFACT_PATHS=0`
 - `PROVIDER_OR_PRIVATE_KEY_SIGNATURES=0`
 - `DB_URL_EXAMPLE_FILES=26`
@@ -274,7 +313,7 @@ Tracked-file scan:
 - no Google API key, Vercel Blob token, private key, or live auth secret
 - credential-shaped references are placeholders, dependency skill examples,
   test bootstrap values, or the three documented demo fixtures
-- 19 unrelated untracked `.superpowers/sdd/*` files remain preserved
+- 20 unrelated untracked `.superpowers/sdd/*` files remain preserved
 
 ## External-Key Limitations
 

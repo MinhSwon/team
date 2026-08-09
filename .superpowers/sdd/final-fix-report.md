@@ -434,3 +434,159 @@ Real Google Places and Vercel Blob success paths remain unverified because
 their keys are absent. Staging must verify private upload/proxy, hostile legacy
 rejection, owned-store conversion, deletion cleanup, and Google success with
 scoped credentials.
+
+---
+
+## Third Reviewer Data-Safety Wave
+
+Date: 2026-08-09
+
+Status: **COMPLETE**
+
+Application code HEAD tested:
+`1cbec8f4db4d855c601a1d26fb0221d38b9be005`
+
+### Commits
+
+- `1cbec8f` `fix: harden private media migration and acceptance`
+- Evidence commit: `docs: record third reviewer evidence`
+
+### Findings Closed
+
+1. **Migration public-reference preservation**
+   - Corrected unreleased private-media migrations in place.
+   - `20260809012000_private_blob_hardening` validates both `url` and
+     `sourceUrl` without rewriting either reference or conversion lifecycle.
+   - Exact fixtures cover `PENDING_PRIVATE_COPY`, `CONVERTING` before private
+     copy, `CONVERTING` after private copy, and `PENDING_PUBLIC_DELETE`.
+   - Foreign hosts, public URLs in private slots, missing source references,
+     and ambiguous lifecycle/reference pairs abort before mutation.
+   - Readiness rejects pending conversion states, every surviving `sourceUrl`,
+     and public Blob URLs.
+   - Current development history used guarded pre-release checksum repair only
+     after proving zero `BlobUpload` and zero `SavedPlaceImage` rows.
+
+2. **Better Auth signup sanitation**
+   - `databaseHooks.user.create.before` trims names, enforces 1-80 characters,
+     normalizes usernames, and forces `image: null`.
+   - Hardening migration clears existing `User.image`.
+   - Profile, friends, posts, interactions, comments, and user-search DTOs no
+     longer select or return public avatar fields.
+   - Direct auth signup acceptance submitted an external image and verified
+     stored `{ name: "Direct Auth User", image: null }`.
+
+3. **Trusted proxy parsing and deployment topology**
+   - Production fails fast when `TRUSTED_PROXY_IPS` is absent.
+   - Parser rejects empty entries, empty CIDR prefixes, extra slashes,
+     malformed addresses, nonnumeric prefixes, and out-of-range prefixes.
+   - `npm run check:deployment` validates syntax while docs state that origin
+     isolation or a platform-authenticated proxy chain remains mandatory.
+   - Development/test without trusted proxies disables IP tracking instead of
+     creating one global sign-in bucket.
+
+4. **Upload and caption bounds**
+   - Upload route rejects declared multipart requests above 5 MiB plus 256 KiB
+     before `formData()`.
+   - Missing or chunked `Content-Length` still requires a platform request-body
+     limit; no streaming parser dependency was added.
+   - Saved-place image captions accept 300 characters and reject 301.
+
+5. **Bounded legacy conversion and media reads**
+   - Legacy conversion claims at most four records and processes sequentially,
+     bounding buffered image memory.
+   - Media Blob `get` receives a 30-second abort signal.
+   - Normal media streams remain unbuffered; deployment response timeouts are
+     still required because SDK stream cancellation after headers is provider
+     behavior.
+
+6. **Acceptance source authenticity and cleanup**
+   - Acceptance requires clean tracked source and rejects untracked files
+     outside preserved `.superpowers/sdd` review artifacts.
+   - Build commit is captured before build and rechecked after build and
+     teardown.
+   - Synchronous or asynchronous server/browser cleanup failures no longer
+     skip build removal, environment restore, commit checks, source checks, or
+     remaining browser/Prisma cleanup.
+   - Both harnesses built and ran immutable source commit
+     `1cbec8f4db4d855c601a1d26fb0221d38b9be005`.
+
+7. **Self-review closure**
+   - Empty comma-separated proxy entries are rejected instead of silently
+     dropped.
+   - Browser and server teardown wrap synchronous failures into durable
+     `AggregateError` results after all cleanup actions run.
+
+### TDD Evidence
+
+Recorded RED:
+
+```text
+Focused suite: 80 PASS, 8 FAIL
+Media suite: 19 PASS, 1 FAIL
+Migration verifier: public sourceUrl lost for CONVERTING-after-copy and
+PENDING_PUBLIC_DELETE fixtures
+Self-review suite: 49 PASS, 3 FAIL
+```
+
+Recorded GREEN:
+
+```text
+Focused suite: 89 PASS, 0 FAIL
+Self-review suite: 52 PASS, 0 FAIL
+Full suite: 180 PASS, 0 FAIL
+Migration verifier: 8 PASS, 0 FAIL
+```
+
+### Verification
+
+```text
+Guarded unreleased checksum repair: PASS; zero BlobUpload/SavedPlaceImage rows
+Migration proofs: 8 PASS, 0 FAIL
+Current DB migrations: 6, up to date
+Blob conversion readiness: PASS, no pending or failed rows
+Seed runs: 2; credential sign-ins: 3 each
+Live PostgreSQL races: 2 PASS, 0 FAIL
+Tests: 180 PASS, 0 FAIL, 0 skipped
+Lint: PASS
+Deployment config check: PASS, 1 trusted direct-peer entry
+Build: PASS
+Standard build ID: lpN5Bn9IiQ5-9rpRyO-yI
+React Doctor: 100/100, 92 files, no issues
+HTTP acceptance: 12 PASS, 0 FAIL
+HTTP build: ZbahTCCDb1jyNliL4gvqz, port 52856
+Browser acceptance: 14 PASS, 0 FAIL
+Browser build: oqv2ZnHgpo4hIc36ycxUW, port 57853
+Combined acceptance: 26 PASS, 0 FAIL
+Acceptance source commit: 1cbec8f4db4d855c601a1d26fb0221d38b9be005
+Acceptance build cleanup: PASS
+Tracked files scanned: 346
+Tracked artifact paths: 0
+Live-key signatures: 0
+Unexpected DB URL files: 0
+Preserved untracked SDD artifacts: 20
+```
+
+The first production build probe without `TRUSTED_PROXY_IPS` failed during API
+route configuration collection. This is expected production fail-fast
+behavior. Final build set `TRUSTED_PROXY_IPS=127.0.0.1/32` for local
+direct-peer topology and passed.
+
+Source commit totals:
+
+```text
+1 commit
+35 files changed
+1187 insertions
+219 deletions
+```
+
+Exact commands and criterion output are recorded in
+`docs/acceptance/social-place-network.md`.
+
+### Remaining Concern
+
+`GOOGLE_MAPS_API_KEY` and `BLOB_READ_WRITE_TOKEN` are unset. Real Google Places
+and Vercel Blob success paths remain staging requirements. Local acceptance
+proves fallback/no-image behavior; automated tests prove private-media
+authorization, hostile legacy rejection, ownership, conversion, timeout,
+cleanup, and race behavior with mocked provider APIs.
