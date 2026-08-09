@@ -5,15 +5,15 @@ Date: 2026-08-09
 Status: **COMPLETE**
 
 Application code HEAD tested:
-`1cbec8f4db4d855c601a1d26fb0221d38b9be005`
-(`fix: harden private media migration and acceptance`)
+`712748ad6a717991e6d7ed7c4354a19094c2e308`
+(`fix social privacy race and auth bounds`)
 
 Fresh production acceptance identities:
 
-- HTTP: build `ZbahTCCDb1jyNliL4gvqz`, commit
-  `1cbec8f4db4d855c601a1d26fb0221d38b9be005`, isolated port `52856`
-- Browser: build `oqv2ZnHgpo4hIc36ycxUW`, commit
-  `1cbec8f4db4d855c601a1d26fb0221d38b9be005`, isolated port `57853`
+- HTTP: build `xmTB5rusYGwIYe2k9CKoB`, commit
+  `712748ad6a717991e6d7ed7c4354a19094c2e308`, isolated port `54417`
+- Browser: build `k6JhUdxW78SM-229wtzdA`, commit
+  `712748ad6a717991e6d7ed7c4354a19094c2e308`, isolated port `64881`
 
 Both harnesses generated a new production build, started `next start` on an
 isolated port, asserted the current Git commit, and removed
@@ -25,11 +25,11 @@ isolated port, asserted the current Git commit, and removed
 - Applied migrations: **6**, current database up to date
 - Blob conversion readiness: **PASS**, no pending or failed rows
 - Seed runs: **2**, each verified **3 credential sign-ins**
-- Live PostgreSQL race proofs: **2 PASS, 0 FAIL**
-- Unit/domain/API tests: **180 PASS, 0 FAIL**
+- Live PostgreSQL race proofs: **3 PASS, 0 FAIL**
+- Unit/domain/API tests: **181 PASS, 0 FAIL**
 - Lint: **PASS**, no diagnostics
-- Production build: **PASS**, build ID `lpN5Bn9IiQ5-9rpRyO-yI`
-- React Doctor changed scope: **100/100**, 92 files, no issues
+- Production build: **PASS**, build ID `pvrp0asyQzPyEx-frMfcD`
+- React Doctor changed scope: **100/100**, 94 files, no issues
 - HTTP/API acceptance: **12 PASS, 0 FAIL**
 - Browser acceptance: **14 PASS, 0 FAIL**
 - Combined acceptance criteria: **26 PASS, 0 FAIL**
@@ -129,14 +129,14 @@ npx react-doctor@latest --verbose --scope changed
 
 Actual results:
 
-- `npm run verify:races`: **2 passed, 0 failed**
-- `npm test`: **180 passed, 0 failed, 0 skipped**
+- `npm run verify:races`: **3 passed, 0 failed**
+- `npm test`: **181 passed, 0 failed, 0 skipped**
 - `npm run lint`: exit 0, no diagnostics
 - `npm run check:deployment`: one valid direct-peer proxy entry
 - `npm run build`: Prisma Client `7.9.1`; Next.js `16.3.0`; compile,
   TypeScript, 23-page generation, and route finalization passed
-- Standard production build ID: `lpN5Bn9IiQ5-9rpRyO-yI`
-- React Doctor: 92 changed-scope files, **100/100**, no issues
+- Standard production build ID: `pvrp0asyQzPyEx-frMfcD`
+- React Doctor: 94 changed-scope files, **100/100**, no issues
 
 An initial production build without `TRUSTED_PROXY_IPS` failed during API route
 configuration collection. This is expected fail-fast behavior. The verified
@@ -148,6 +148,7 @@ Live race output:
 ```text
 PASS PostLike race: serialized before removal
 PASS Comment race: serialized before removal
+PASS Blob conversion/delete race: leased delete intent retained both references for cleanup
 ```
 
 ## Security Review Coverage
@@ -170,9 +171,12 @@ PASS Comment race: serialized before removal
   and stale-lease recovery. Provider get/put/delete calls and conversion
   streams have 30-second deadlines under the five-minute lease. Overlapping
   workers cannot process one row.
-- Edit/remove/delete atomically moves all referenced active Blob lifecycles to
-  `PENDING_DELETE` and clears leases. Lease-guarded conversion completion
-  cannot restore a deleted image to `CLAIMED`.
+- Edit/remove/delete atomically moves referenced active Blob lifecycles to
+  `PENDING_DELETE`. An active `CONVERTING` lease is retained so cleanup cannot
+  race the provider write. The converter may durably record the resulting
+  private reference under that same lease, but cannot restore the row to
+  `CLAIMED`; cleanup claims it only after lease expiry and deletes both public
+  and private references.
 - `npm run verify:blob-conversion` gates `npm run build`, `npm start`, and both
   acceptance harnesses. Readiness fails while private-copy, conversion,
   public-delete, or failed conversion work remains.
@@ -188,6 +192,10 @@ PASS Comment race: serialized before removal
 - Profile updates reject non-null avatar values; UI uses initials fallback.
 - Better Auth signup trims and validates names to 1-80 characters and forces
   `image: null` before database creation. Public social DTOs omit avatar/image.
+- Better Auth updates validate only supplied identity fields, trim names,
+  normalize usernames, and reject non-null images without clobbering unrelated
+  partial updates.
+- User search accepts 200 characters and rejects 201 before Prisma executes.
 - Uploads reject declared multipart requests over 5 MiB plus 256 KiB before
   `formData()`. Platform request-body limits remain required for missing or
   chunked `Content-Length`.
@@ -212,10 +220,11 @@ npm run acceptance:social
 Final output:
 
 ```text
-Fresh production server: build ZbahTCCDb1jyNliL4gvqz, commit 1cbec8f4db4d855c601a1d26fb0221d38b9be005, port 52856
+Fresh production server: build xmTB5rusYGwIYe2k9CKoB, commit 712748ad6a717991e6d7ed7c4354a19094c2e308, pid 32400, port 54417
 Verified credential sign-ins: 3
 Direct auth signup sanitation: PASS
-Application: http://127.0.0.1:52856
+Direct auth update sanitation: PASS
+Application: http://127.0.0.1:54417
 PASS 1/12 demo users sign in
 PASS 2/12 friend request is sent and accepted
 PASS 3/12 manual save creates exactly one post
@@ -242,7 +251,7 @@ npm run acceptance:browser
 Final output:
 
 ```text
-Fresh production server: build oqv2ZnHgpo4hIc36ycxUW, commit 1cbec8f4db4d855c601a1d26fb0221d38b9be005, port 57853
+Fresh production server: build k6JhUdxW78SM-229wtzdA, commit 712748ad6a717991e6d7ed7c4354a19094c2e308, pid 37012, port 64881
 Verified credential sign-ins: 3
 PASS 1/14 fresh registration and demo users sign in through UI
 PASS 2/14 friend request is sent and accepted through UI
@@ -259,7 +268,7 @@ PASS 12/14 browser reload preserves saved data
 PASS 13/14 unsaved detail saves and removes canonical place in UI
 PASS 14/14 desktop and 375px mobile layout and keyboard controls pass
 Browser: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
-Application: http://127.0.0.1:57853
+Application: http://127.0.0.1:64881
 Acceptance total: 14 PASS, 0 FAIL
 ```
 
@@ -273,6 +282,18 @@ visible UI exists.
 
 ## TDD Regression Evidence
 
+- Fourth-wave focused RED:
+  `npx tsx --import ./scripts/test-env.ts --test
+  "src/lib/auth-update.test.ts" "src/app/api/users/search/route.test.ts"
+  "src/lib/final-fix-wave.test.ts"` returned **46 passed, 2 failed** because
+  `sanitizeAuthUserUpdate` and `handleUserSearch` did not exist.
+- Fourth-wave live race RED: `npm run verify:races` retained two passing
+  interaction races but failed the Blob interleaving because delete intent
+  cleared `leaseUntil`.
+- Fourth-wave focused GREEN: the same focused command returned
+  **48 passed, 0 failed**.
+- Fourth-wave live race GREEN: `npm run verify:races` returned
+  **3 passed, 0 failed**.
 - Third-wave initial focused RED: **80 passed, 8 failed**.
 - Media-specific RED: **19 passed, 1 failed**.
 - Migration verifier RED reproduced public-reference loss for
@@ -301,19 +322,20 @@ visible UI exists.
 
 Tracked-file scan:
 
-- `TRACKED_FILES=346`
+- `TRACKED_FILES=348`
 - `ARTIFACT_PATHS=0`
 - `PROVIDER_OR_PRIVATE_KEY_SIGNATURES=0`
-- `DB_URL_EXAMPLE_FILES=26`
-- `UNEXPECTED_DB_URL_FILES=0`
-- `UNEXPECTED_ENV_FILES=0`
+- `DB_URL_MATCHES=36`
+- `UNEXPECTED_DB_URL_MATCHES=0`
+- `COOKIE_SIGNATURE_MATCHES=0`
+- `UNTRACKED_OUTSIDE_SDD=0`
 - no tracked runtime `.env`, log, cookie, HAR, trace, SQLite, database,
   browser-state, `.next`, or test-result artifact
 - `.env.example` is the sole expected environment-name match
 - no Google API key, Vercel Blob token, private key, or live auth secret
 - credential-shaped references are placeholders, dependency skill examples,
   test bootstrap values, or the three documented demo fixtures
-- 20 unrelated untracked `.superpowers/sdd/*` files remain preserved
+- 21 unrelated untracked `.superpowers/sdd/*` files remain preserved
 
 ## External-Key Limitations
 

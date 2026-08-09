@@ -590,3 +590,114 @@ and Vercel Blob success paths remain staging requirements. Local acceptance
 proves fallback/no-image behavior; automated tests prove private-media
 authorization, hostile legacy rejection, ownership, conversion, timeout,
 cleanup, and race behavior with mocked provider APIs.
+
+---
+
+## Fourth Reviewer Race And Auth Wave
+
+Date: 2026-08-09
+
+Status: **COMPLETE**
+
+Application code HEAD tested:
+`712748ad6a717991e6d7ed7c4354a19094c2e308`
+
+### Commits
+
+- `712748a` `fix social privacy race and auth bounds`
+- Evidence commit: `docs: record fourth reviewer evidence`
+
+### Findings Closed
+
+1. **Conversion/delete orphan race**
+   - Delete intent changes `CONVERTING` to `PENDING_DELETE` without clearing
+     its active lease.
+   - Cleanup claims `PENDING_DELETE` only when its lease is null or expired.
+   - A converter holding the matching lease may durably record its completed
+     private URL/pathname while the row remains `PENDING_DELETE`.
+   - Conversion finish remains `CONVERTING`-only, so delete intent cannot
+     return to `CLAIMED`.
+   - Live PostgreSQL interleaving blocks provider `put`, applies delete intent,
+     proves early cleanup claims nothing, releases `put`, proves both public
+     and private references remain durable, then proves post-expiry cleanup
+     deletes both references and the ledger row.
+
+2. **Better Auth update-user bypass**
+   - `databaseHooks.user.update.before` validates only supplied fields.
+   - Optional names are trimmed and limited to 1-80 characters.
+   - Optional usernames are normalized and checked against
+     `^[a-z0-9._]{3,30}$`.
+   - Non-null images are rejected; `null`, `undefined`, and unrelated partial
+     fields are preserved without clobbering omitted data.
+   - HTTP acceptance calls authenticated `/api/auth/update-user`, rejects
+     external image, blank/long name, and invalid username payloads, then
+     verifies a valid normalized update persisted with `image: null`.
+
+3. **User-search query bound**
+   - User search reuses `PLACE_LIMITS.query` at 200 characters.
+   - A 201-character query returns HTTP 400 before Prisma executes.
+   - Boundary coverage proves 200 characters still executes one search.
+
+### TDD Evidence
+
+Recorded RED:
+
+```text
+Focused suite: 46 PASS, 2 FAIL
+Missing sanitizeAuthUserUpdate
+Missing handleUserSearch
+Live races: Blob race FAIL because delete intent cleared leaseUntil
+```
+
+Recorded GREEN:
+
+```text
+Focused suite: 48 PASS, 0 FAIL
+Live PostgreSQL races: 3 PASS, 0 FAIL
+Full suite: 181 PASS, 0 FAIL
+```
+
+### Verification
+
+```text
+Migration proofs: 8 PASS, 0 FAIL
+Current DB migrations: 6, up to date
+Blob conversion readiness: PASS, no pending or failed rows
+Seed runs: 2; credential sign-ins: 3 each
+Live PostgreSQL races: 3 PASS, 0 FAIL
+Tests: 181 PASS, 0 FAIL, 0 skipped
+Lint: PASS
+Deployment config check: PASS, 1 trusted direct-peer entry
+Build: PASS
+Standard build ID: pvrp0asyQzPyEx-frMfcD
+React Doctor: 100/100, 94 files, no issues
+HTTP acceptance: 12 PASS, 0 FAIL
+HTTP build: xmTB5rusYGwIYe2k9CKoB, port 54417
+Browser acceptance: 14 PASS, 0 FAIL
+Browser build: k6JhUdxW78SM-229wtzdA, port 64881
+Combined acceptance: 26 PASS, 0 FAIL
+Acceptance source commit: 712748ad6a717991e6d7ed7c4354a19094c2e308
+Tracked files scanned: 348
+Tracked artifact paths: 0
+Provider/private-key signatures: 0
+Unexpected DB URL matches: 0
+Cookie signatures: 0
+Preserved untracked SDD artifacts: 21
+```
+
+Source commit totals:
+
+```text
+1 commit
+9 files changed
+403 insertions
+148 deletions
+```
+
+### Remaining Concern
+
+`GOOGLE_MAPS_API_KEY` and `BLOB_READ_WRITE_TOKEN` are unset. Real Google Places
+and Vercel Blob success paths remain staging requirements. Local acceptance
+proves fallback/no-image behavior; automated tests prove private-media
+authorization, hostile legacy rejection, ownership, conversion, timeout,
+cleanup, and race behavior with mocked provider APIs.
