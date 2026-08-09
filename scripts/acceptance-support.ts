@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 import type { PrismaClient } from "@prisma/client";
 
@@ -14,6 +15,14 @@ export type AcceptanceResponse = {
 export type AcceptanceClient = {
   request(path: string, init?: RequestInit): Promise<AcceptanceResponse>;
 };
+
+export function createAcceptanceIp(): string {
+  const bytes = randomBytes(8);
+  const suffix = [0, 2, 4, 6]
+    .map((offset) => bytes.readUInt16BE(offset).toString(16))
+    .join(":");
+  return `2001:db8::${suffix}`;
+}
 
 type RuntimeState = {
   users: Record<string, { id: string }>;

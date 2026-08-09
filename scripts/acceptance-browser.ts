@@ -137,6 +137,7 @@ async function assertLayout(page: Page, mobile: boolean) {
 async function main() {
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL is required");
   const {
+    createAcceptanceIp,
     demoUsers,
     prepareAcceptanceDatabase,
     seedDemoUsers,
@@ -148,8 +149,14 @@ async function main() {
     executablePath: browserPath(),
     headless: true,
   });
+  const acceptanceIp = createAcceptanceIp();
   const contexts = await Promise.all(
-    demoUsers.map(() => browser.newContext({ baseURL: appUrl })),
+    demoUsers.map(() =>
+      browser.newContext({
+        baseURL: appUrl,
+        extraHTTPHeaders: { "x-forwarded-for": acceptanceIp },
+      }),
+    ),
   );
   const [alice, bob, carol] = await Promise.all(
     contexts.map((context) => context.newPage()),

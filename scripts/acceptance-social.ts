@@ -14,9 +14,12 @@ const appUrl = (
 class CookieClient implements AcceptanceClient {
   private readonly cookies = new Map<string, string>();
 
+  constructor(private readonly ip: string) {}
+
   async request(path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
     headers.set("Origin", appUrl);
+    headers.set("x-forwarded-for", this.ip);
     if (this.cookies.size > 0) {
       headers.set(
         "Cookie",
@@ -53,15 +56,21 @@ async function login(client: CookieClient, email: string, password: string) {
 
 async function main() {
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL is required");
-  const { demoUsers, runAcceptance, seedDemoUsers } = await import(
+  const {
+    createAcceptanceIp,
+    demoUsers,
+    runAcceptance,
+    seedDemoUsers,
+  } = await import(
     "./acceptance-support"
   );
   seedDemoUsers();
   const { prisma } = await import("../src/lib/db");
+  const acceptanceIp = createAcceptanceIp();
   const clients = {
-    alice: new CookieClient(),
-    bob: new CookieClient(),
-    carol: new CookieClient(),
+    alice: new CookieClient(acceptanceIp),
+    bob: new CookieClient(acceptanceIp),
+    carol: new CookieClient(acceptanceIp),
   };
 
   try {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import test from "node:test";
 
 import { markNotificationsRead } from "./interactions";
@@ -105,6 +106,21 @@ test("demo seed requires explicit opt-in and refuses production", () => {
   const production = run({ ALLOW_DEMO_SEED: "1", NODE_ENV: "production" });
   assert.notEqual(production.status, 0);
   assert.match(`${production.stdout}\n${production.stderr}`, /production/i);
+});
+
+test("acceptance harness isolates persistent IP rate-limit buckets", async () => {
+  const support = (await import("../../scripts/acceptance-support")) as {
+    createAcceptanceIp?: () => string;
+  };
+  const createAcceptanceIp = support.createAcceptanceIp;
+  assert.ok(createAcceptanceIp);
+  const first = createAcceptanceIp();
+  const second = createAcceptanceIp();
+  assert.equal(isIP(first), 6);
+  assert.equal(isIP(second), 6);
+  assert.notEqual(first, second);
+  assert.match(source("scripts/acceptance-social.ts"), /x-forwarded-for/);
+  assert.match(source("scripts/acceptance-browser.ts"), /extraHTTPHeaders/);
 });
 
 test("rate limiter uses documented conservative policies and atomic store result", async () => {
