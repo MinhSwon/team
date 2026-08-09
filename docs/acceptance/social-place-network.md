@@ -5,15 +5,15 @@ Date: 2026-08-09
 Status: **COMPLETE**
 
 Application code HEAD tested:
-`41b70b67fe7ce286fc58ca6e07869405811cdf3d`
-(`fix: close final social security gaps`)
+`02858b6501dc950b3cad8c345968cea449d2f253`
+(`fix: harden private media migration and acceptance`)
 
 Fresh production acceptance identities:
 
-- HTTP: build `5Iqn7n_N7h7i2wf1t0iW5`, commit
-  `41b70b67fe7ce286fc58ca6e07869405811cdf3d`, isolated port `62356`
-- Browser: build `29hflnD3iogEIqxXacZHW`, commit
-  `41b70b67fe7ce286fc58ca6e07869405811cdf3d`, isolated port `64827`
+- HTTP: build `Px8LSbHO3yTxHF9WziBeD`, commit
+  `02858b6501dc950b3cad8c345968cea449d2f253`, isolated port `55808`
+- Browser: build `2IZ5sNXQm-7fBW0IhwZEc`, commit
+  `02858b6501dc950b3cad8c345968cea449d2f253`, isolated port `64980`
 
 Both harnesses generated a new production build, started `next start` on an
 isolated port, asserted the current Git commit, and removed
@@ -22,12 +22,13 @@ isolated port, asserted the current Git commit, and removed
 ## Totals
 
 - Migration proofs: **5 PASS, 0 FAIL**
-- Applied migrations: **5**, current database up to date
+- Applied migrations: **6**, current database up to date
+- Blob conversion readiness: **PASS**, no pending or failed rows
 - Seed runs: **2**, each verified **3 credential sign-ins**
 - Live PostgreSQL race proofs: **2 PASS, 0 FAIL**
-- Unit/domain/API tests: **154 PASS, 0 FAIL**
+- Unit/domain/API tests: **170 PASS, 0 FAIL**
 - Lint: **PASS**, no diagnostics
-- Production build: **PASS**, build ID `JR6meysh1Bi4t-PLYLvbz`
+- Production build: **PASS**, build ID `Xb_KXteqNoYRLrHihVEzq`
 - React Doctor changed scope: **100/100**, 90 files, no issues
 - HTTP/API acceptance: **12 PASS, 0 FAIL**
 - Browser acceptance: **14 PASS, 0 FAIL**
@@ -41,6 +42,7 @@ Exact commands:
 npm run verify:migrations
 npx prisma migrate deploy
 npx prisma migrate status
+npm run verify:blob-conversion
 ```
 
 Migration proof:
@@ -48,7 +50,7 @@ Migration proof:
 ```text
 PASS fresh temporary schema migration
 PASS representative legacy schema rejected before social tables with mapped-table preflight
-PASS private Blob image backfills exact owner and claimed lifecycle
+PASS private Blob image backfills exact owner and pending verified conversion
 PASS public Blob image enters durable private-copy ledger
 PASS unsupported external image aborts before schema or data mutation
 ```
@@ -57,9 +59,10 @@ Current database result:
 
 ```text
 Datasource "db": PostgreSQL database "placedecide", schema "public" at "127.0.0.1:55432"
-5 migrations found in prisma/migrations
+6 migrations found in prisma/migrations
 No pending migrations to apply.
 Database schema is up to date!
+Blob private conversion ready: no pending or failed rows
 ```
 
 Applied migrations:
@@ -69,16 +72,18 @@ Applied migrations:
 - `20260809000000_final_fix_wave`
 - `20260809010000_private_blob_lifecycle_enum`
 - `20260809011000_private_blob_media`
+- `20260809012000_private_blob_hardening`
 
 Baseline rollout remains fresh-install-only. Existing social-schema databases
 may be baselined only when they match the schema exactly. Mapped legacy tables
 abort before social tables are created.
 
 Existing `SavedPlaceImage` ownership derives only through
-`UserSavedPlace.userId`. Supported private Blob rows become `CLAIMED`.
-Supported public Blob rows enter `PENDING_PRIVATE_COPY`; cleanup copies them to
-private storage before deleting the public source. Unsupported external URLs
-abort before schema or data mutation.
+`UserSavedPlace.userId`. Migration accepts only exact owned hosts configured by
+`placedecide.legacy_blob_store_hosts`; arbitrary Vercel tenants and unsupported
+external URLs abort before schema or data mutation. Supported legacy rows enter
+`PENDING_PRIVATE_COPY`; cleanup validates a 5 MB bound and JPEG/PNG/WebP magic
+before private copy and public-source deletion.
 
 ## Seed
 
@@ -114,11 +119,11 @@ npx react-doctor@latest --verbose --scope changed
 Actual results:
 
 - `npm run verify:races`: **2 passed, 0 failed**
-- `npm test`: **154 passed, 0 failed, 0 skipped**
+- `npm test`: **170 passed, 0 failed, 0 skipped**
 - `npm run lint`: exit 0, no diagnostics
 - `npm run build`: Prisma Client `7.9.1`; Next.js `16.3.0`; compile,
   TypeScript, 23-page generation, and route finalization passed
-- Standard production build ID: `JR6meysh1Bi4t-PLYLvbz`
+- Standard production build ID: `Xb_KXteqNoYRLrHihVEzq`
 - React Doctor: 90 changed-scope files, **100/100**, no issues
 
 Live race output:
@@ -135,17 +140,33 @@ PASS Comment race: serialized before removal
 - Each media request authenticates and performs one current friendship/place
   visibility query before fetching the private Blob.
 - Media responses, including errors, use `Cache-Control: private, no-store`.
-  Removed friends receive opaque 404 on later media requests.
-- Upload reservation is durable before provider write. Failed persistence plus
-  failed immediate deletion remains recoverable through the reserved pathname
-  and cleanup lifecycle.
+  Successful media responses also use `X-Content-Type-Options: nosniff` and a
+  stored trusted JPEG/PNG/WebP MIME. Removed friends receive opaque 404 on
+  later media requests.
+- Legacy conversion requires an exact configured owned Blob hostname and
+  ignores provider MIME claims. Payloads over 5 MB or without JPEG, PNG, or
+  WebP magic are rejected before private copy.
+- Upload reservation is durable before provider write. Ambiguous provider
+  `put` failures retain the reservation and deterministic pathname for
+  idempotent orphan deletion.
 - Blob cleanup claims rows with `FOR UPDATE SKIP LOCKED`, a `DELETING` lease,
-  and stale-lease recovery. Overlapping workers cannot process one row.
+  and stale-lease recovery. Provider get/put/delete calls and conversion
+  streams have 30-second deadlines under the five-minute lease. Overlapping
+  workers cannot process one row.
+- Edit/remove/delete atomically moves all referenced active Blob lifecycles to
+  `PENDING_DELETE` and clears leases. Lease-guarded conversion completion
+  cannot restore a deleted image to `CLAIMED`.
+- `npm run verify:blob-conversion` gates `npm run build`, `npm start`, and both
+  acceptance harnesses. Readiness fails while private-copy, conversion,
+  public-delete, or failed conversion work remains.
 - Better Auth uses PostgreSQL-backed `customStorage.consume`; no process-local
   limiter remains. Multi-instance atomic consumption is covered.
-- Proxy IP headers are ignored unless `TRUSTED_PROXY_IPS` explicitly lists
-  trusted proxy addresses or CIDR ranges.
+- Production startup fails when `TRUSTED_PROXY_IPS` is missing or invalid.
+  Proxy IP headers are ignored unless it explicitly lists trusted bare IPs or
+  CIDR ranges. Development/test disables Better Auth IP limiting when no
+  trusted proxy is configured, avoiding a shared global bucket.
 - `npm run cleanup:rate-limits` prunes expired buckets.
+- Profile updates reject non-null avatar values; UI uses initials fallback.
 - Manual area is limited to 120 characters. Website and Maps URLs are limited
   to 2,048 characters. Website URLs require HTTPS and reject credentials.
   Latitude accepts `[-90, 90]`; longitude accepts `[-180, 180]`.
@@ -161,9 +182,9 @@ npm run acceptance:social
 Final output:
 
 ```text
-Fresh production server: build 5Iqn7n_N7h7i2wf1t0iW5, commit 41b70b67fe7ce286fc58ca6e07869405811cdf3d, pid 45372, port 62356
+Fresh production server: build Px8LSbHO3yTxHF9WziBeD, commit 02858b6501dc950b3cad8c345968cea449d2f253, port 55808
 Verified credential sign-ins: 3
-Application: http://127.0.0.1:62356
+Application: http://127.0.0.1:55808
 PASS 1/12 demo users sign in
 PASS 2/12 friend request is sent and accepted
 PASS 3/12 manual save creates exactly one post
@@ -190,7 +211,7 @@ npm run acceptance:browser
 Final output:
 
 ```text
-Fresh production server: build 29hflnD3iogEIqxXacZHW, commit 41b70b67fe7ce286fc58ca6e07869405811cdf3d, pid 15944, port 64827
+Fresh production server: build 2IZ5sNXQm-7fBW0IhwZEc, commit 02858b6501dc950b3cad8c345968cea449d2f253, port 64980
 Verified credential sign-ins: 3
 PASS 1/14 fresh registration and demo users sign in through UI
 PASS 2/14 friend request is sent and accepted through UI
@@ -207,7 +228,7 @@ PASS 12/14 browser reload preserves saved data
 PASS 13/14 unsaved detail saves and removes canonical place in UI
 PASS 14/14 desktop and 375px mobile layout and keyboard controls pass
 Browser: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
-Application: http://127.0.0.1:64827
+Application: http://127.0.0.1:64980
 Acceptance total: 14 PASS, 0 FAIL
 ```
 
@@ -221,6 +242,13 @@ visible UI exists.
 
 ## TDD Regression Evidence
 
+- Initial second-review focused suite: **24 passed, 13 failed**.
+- Self-review focused RED:
+  `npx tsx --import ./scripts/test-env.ts --test src/lib/final-fix-wave.test.ts`
+  returned **35 passed, 4 failed** for hostname case normalization,
+  pathname-derived access, bare trusted-proxy IP handling, and browser cleanup
+  helper extraction.
+- Focused GREEN: same command returned **40 passed, 0 failed**.
 - Acceptance worker-cap assertion: **0/1 failed**, then **1/1 passed**.
 - Browser acceptance exposed sign-in HTTP 429. Root cause was generated IPv6
   values sharing Better Auth's normalized `/64`; focused IP isolation test
@@ -234,13 +262,19 @@ visible UI exists.
 
 Tracked-file scan:
 
+- `TRACKED_FILES=344`
+- `ARTIFACT_PATHS=0`
+- `PROVIDER_OR_PRIVATE_KEY_SIGNATURES=0`
+- `DB_URL_EXAMPLE_FILES=26`
+- `UNEXPECTED_DB_URL_FILES=0`
+- `UNEXPECTED_ENV_FILES=0`
 - no tracked runtime `.env`, log, cookie, HAR, trace, SQLite, database,
   browser-state, `.next`, or test-result artifact
 - `.env.example` is the sole expected environment-name match
 - no Google API key, Vercel Blob token, private key, or live auth secret
 - credential-shaped references are placeholders, dependency skill examples,
   test bootstrap values, or the three documented demo fixtures
-- 18 unrelated untracked `.superpowers/sdd/*` files remain preserved
+- 19 unrelated untracked `.superpowers/sdd/*` files remain preserved
 
 ## External-Key Limitations
 

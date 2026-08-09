@@ -263,3 +263,174 @@ Exact commands and output are in
 Real Google Places and Vercel Blob success paths remain unverified because
 their keys are absent. Staging must verify private upload/proxy, public legacy
 conversion, deletion cleanup, and Google success with scoped credentials.
+
+---
+
+## Second Final-Review Hardening Wave
+
+Date: 2026-08-09
+
+Status: **COMPLETE**
+
+Application code HEAD tested:
+`02858b6501dc950b3cad8c345968cea449d2f253`
+
+### Commit
+
+- `02858b6` `fix: harden private media migration and acceptance`
+- Evidence commit: `docs: record second final-review evidence`
+
+### Findings Closed
+
+1. **Legacy Blob stored-XSS defense**
+   - Legacy migration and conversion require exact owned hosts from
+     `placedecide.legacy_blob_store_hosts` and `LEGACY_BLOB_STORE_HOSTS`.
+   - Arbitrary Vercel tenants, foreign hosts, and pathname-based access
+     inference are rejected.
+   - Conversion enforces 5 MB maximum and JPEG/PNG/WebP file magic. Provider
+     `contentType` is not trusted; only derived trusted MIME is persisted.
+   - Media serves only stored trusted MIME with `Cache-Control: private,
+     no-store` and `X-Content-Type-Options: nosniff`.
+
+2. **Private-conversion deployment gate**
+   - `npm run verify:blob-conversion` exits nonzero for
+     `PENDING_PRIVATE_COPY`, `CONVERTING`, `PENDING_PUBLIC_DELETE`, or failed
+     conversion rows.
+   - `npm run build`, `npm start`, and both acceptance harnesses run the gate.
+   - Required order is migrate, cleanup to zero, readiness check, build, then
+     cutover.
+
+3. **Edit/delete conversion races**
+   - Image replacement/removal and saved-place deletion atomically move all
+     referenced active lifecycles to `PENDING_DELETE` and clear leases.
+   - Conversion writes use lifecycle and lease guards. An in-flight worker
+     cannot restore a removed image to `CLAIMED`.
+   - Stateful edit/delete-during-conversion tests pass.
+
+4. **Ambiguous upload failures**
+   - A provider `put` error no longer deletes the durable reservation because
+     the object may exist despite the error.
+   - Deterministic pathname survives for retryable, idempotent orphan cleanup.
+
+5. **Provider deadlines and cleanup leases**
+   - Blob get, stream, put, and delete operations have 30-second abort
+     deadlines below the five-minute lease.
+   - `DELETING` and `CONVERTING` leases use stale recovery and guarded writes.
+   - Hung-provider timeout/reclaim and overlapping-worker tests pass.
+
+6. **Trusted proxy fail-fast**
+   - Production rejects missing or invalid `TRUSTED_PROXY_IPS`.
+   - Exact bare IP and CIDR entries are accepted; forwarded headers remain
+     ignored without explicit trust.
+   - Development/test disables Better Auth IP limiting when no trusted proxy
+     exists, avoiding one shared global sign-in bucket.
+
+7. **Acceptance identity and cleanup**
+   - Harness captures source commit before build, requires clean tracked
+     source, and verifies commit remains unchanged through acceptance.
+   - Browser setup uses optional acquired handles in an outer `finally`;
+     focused setup-failure cleanup coverage passes.
+   - HTTP build `Px8LSbHO3yTxHF9WziBeD` ran on port `55808`.
+   - Browser build `2IZ5sNXQm-7fBW0IhwZEc` ran on port `64980`.
+   - Both tested commit
+     `02858b6501dc950b3cad8c345968cea449d2f253`.
+
+8. **Avatar hardening**
+   - Profile updates reject every non-null avatar value.
+   - Arbitrary external avatar URLs are removed from profile writes and UI.
+   - Initials remain the fallback; no unrequested avatar upload system was
+     added.
+
+### TDD Evidence
+
+Initial focused RED:
+
+```text
+24 PASS, 13 FAIL
+```
+
+Self-review focused RED:
+
+```powershell
+npx tsx --import ./scripts/test-env.ts --test src/lib/final-fix-wave.test.ts
+```
+
+```text
+35 PASS, 4 FAIL
+```
+
+Failures covered case-normalized host matching, URL-host access derivation,
+bare trusted-proxy IPs, and browser cleanup helper extraction.
+
+Focused GREEN:
+
+```text
+40 PASS, 0 FAIL
+```
+
+### Verification
+
+```text
+Migration proofs: 5 PASS, 0 FAIL
+Current DB migrations: 6, up to date
+Blob conversion readiness: PASS, no pending or failed rows
+Seed runs: 2; credential sign-ins: 3 each
+Live PostgreSQL races: 2 PASS, 0 FAIL
+Tests: 170 PASS, 0 FAIL
+Lint: PASS
+Build: PASS
+Standard build ID: Xb_KXteqNoYRLrHihVEzq
+React Doctor: 100/100, 90 files, no issues
+HTTP acceptance: 12 PASS, 0 FAIL
+Browser acceptance: 14 PASS, 0 FAIL
+Combined acceptance: 26 PASS, 0 FAIL
+Tracked files scanned: 344
+Tracked artifact paths: 0
+Provider/private-key signatures: 0
+Unexpected DB URL files: 0
+Unexpected environment files: 0
+Google key: unset
+Blob key: unset
+```
+
+Source commit totals:
+
+```text
+1 commit
+28 files changed
+1452 insertions
+215 deletions
+```
+
+### PostgreSQL Verification Incident
+
+Race assertions passed, but the first temporary-database teardown failed:
+
+```text
+XX000 RequestCheckpoint
+```
+
+Root cause was a damaged local temporary PostgreSQL directory skeleton with
+required empty directories missing. Restored standard directories, restarted
+the same local cluster, forced a healthy checkpoint, removed 83 stale
+verifier-created `race_*` databases, and reran verification. Final race
+verifier exited 0; stale race database count is 0. No temporary retry helper
+remains in the repository.
+
+### Self-Review
+
+- Source host ownership is explicit and exact.
+- Legacy bytes determine MIME; hostile HTML-as-PNG cannot be served inline.
+- Conversion readiness is a build/start/cutover gate.
+- Removal wins against cleanup/conversion leases.
+- Ambiguous writes retain durable cleanup state.
+- Provider calls cannot normally outlive leases.
+- Production proxy trust cannot silently collapse sign-ins into one bucket.
+- Acceptance proves immutable source identity and browser resource cleanup.
+
+### Remaining Concern
+
+Real Google Places and Vercel Blob success paths remain unverified because
+their keys are absent. Staging must verify private upload/proxy, hostile legacy
+rejection, owned-store conversion, deletion cleanup, and Google success with
+scoped credentials.
