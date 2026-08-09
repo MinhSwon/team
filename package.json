@@ -13,6 +13,7 @@
     "verify:migrations": "tsx scripts/verify-migrations.ts",
     "verify:races": "tsx scripts/verify-races.ts",
     "cleanup:blobs": "tsx scripts/cleanup-blobs.ts",
+    "cleanup:rate-limits": "tsx scripts/cleanup-rate-limits.ts",
     "acceptance:social": "tsx scripts/acceptance-social.ts",
     "acceptance:browser": "tsx scripts/acceptance-browser.ts"
   },

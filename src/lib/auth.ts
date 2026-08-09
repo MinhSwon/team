@@ -2,9 +2,14 @@ import { prismaAdapter } from "@better-auth/prisma-adapter";
 import { APIError, betterAuth } from "better-auth";
 
 import { prisma } from "@/lib/db";
+import {
+  createBetterAuthRateLimitStorage,
+  trustedProxyList,
+} from "@/lib/rate-limit";
 import { normalizeUsername } from "@/lib/validation";
 
 const usernamePattern = /^[a-z0-9._]{3,30}$/;
+const trustedProxies = trustedProxyList();
 
 export const auth = betterAuth({
   baseURL:
@@ -17,6 +22,24 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
+  },
+  rateLimit: {
+    enabled: true,
+    window: 60,
+    max: 100,
+    customRules: {
+      "/sign-in/email": { window: 15 * 60, max: 5 },
+    },
+    customStorage: createBetterAuthRateLimitStorage(),
+  },
+  advanced: {
+    ipAddress: {
+      ipAddressHeaders:
+        trustedProxies.length > 0
+          ? ["x-forwarded-for", "x-real-ip"]
+          : ["x-placedecide-no-client-ip"],
+      trustedProxies,
+    },
   },
   user: {
     additionalFields: {

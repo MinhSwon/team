@@ -46,14 +46,20 @@ function dependencies(
   return {
     requireUser: async () => ({ id: "user-1" }),
     token: "blob-token",
+    reserveUpload: async (_ownerId, pathname) => ({
+      id: "upload-1",
+      pathname,
+    }),
     put: async () => ({
-      url: "https://blob.example/image.png",
+      url: "https://store.private.blob.vercel-storage.com/image.png",
       pathname: "places/user-1/image.png",
     }),
-    recordUpload: async (_ownerId, blob) => ({
-      id: "upload-1",
-      url: blob.url,
+    completeUpload: async (id) => ({
+      id,
+      url: `/api/media/${id}`,
     }),
+    cancelReservation: async () => {},
+    queueDeletion: async () => {},
     del: async () => {},
     rateLimit: async () => {},
     ...overrides,
@@ -146,7 +152,7 @@ test("handleUpload rejects a valid image signature under the wrong MIME type", a
   assert.equal(response.status, 415);
 });
 
-test("handleUpload stores one allowed image under the current user", async () => {
+test("handleUpload stores one private image and exposes only its internal media URL", async () => {
   let pathname = "";
   let contentType = "";
   let token = "";
@@ -155,11 +161,11 @@ test("handleUpload stores one allowed image under the current user", async () =>
     contentType = options.contentType;
     token = options.token;
     assert.ok(body instanceof File);
-    assert.equal(options.access, "public");
-    assert.equal(options.addRandomSuffix, true);
+    assert.equal(options.access, "private");
+    assert.equal(options.addRandomSuffix, false);
     return {
-      url: "https://blob.example/place.webp",
-      pathname: "places/user-1/place.webp",
+      url: "https://store.private.blob.vercel-storage.com/place.webp",
+      pathname: nextPathname,
     };
   };
 
@@ -169,12 +175,15 @@ test("handleUpload stores one allowed image under the current user", async () =>
   );
 
   assert.equal(response.status, 201);
-  assert.match(pathname, /^places\/user-1\/my-place\.webp$/);
+  assert.match(
+    pathname,
+    /^places\/user-1\/[0-9a-f-]+-my-place\.webp$/,
+  );
   assert.equal(contentType, "image/webp");
   assert.equal(token, "blob-token");
   assert.deepEqual(await response.json(), {
     id: "upload-1",
-    url: "https://blob.example/place.webp",
+    url: "/api/media/upload-1",
   });
 });
 
@@ -230,7 +239,7 @@ test("handleUpload deletes Blob when ownership persistence fails", async () => {
         url: "https://blob.example/orphan.png",
         pathname: "places/user-1/orphan.png",
       }),
-      recordUpload: async () => {
+      completeUpload: async () => {
         throw new Error("database unavailable");
       },
       del: async (url) => {
@@ -241,4 +250,91 @@ test("handleUpload deletes Blob when ownership persistence fails", async () => {
 
   assert.equal(response.status, 502);
   assert.deepEqual(deleted, ["https://blob.example/orphan.png"]);
+});
+
+test("handleUpload creates durable ownership before provider write", async () => {
+  const events: string[] = [];
+  const response = await handleUpload(
+    requestWith(imageFile("image/png")),
+    {
+      requireUser: async () => ({ id: "user-1" }),
+      token: "blob-token",
+      reserveUpload: async (
+        ownerId: string,
+        pathname: string,
+      ) => {
+        events.push(`reserve:${ownerId}:${pathname}`);
+        return { id: "upload-1", pathname };
+      },
+      put: async (pathname: string) => {
+        events.push(`put:${pathname}`);
+        return {
+          url: "https://store.private.blob.vercel-storage.com/image.png",
+          pathname,
+        };
+      },
+      completeUpload: async (
+        id: string,
+        blob: { url: string; pathname: string },
+      ) => {
+        events.push(`complete:${id}:${blob.pathname}`);
+        return { id, url: `/api/media/${id}` };
+      },
+      cancelReservation: async (id: string) => {
+        events.push(`cancel:${id}`);
+      },
+      queueDeletion: async (id: string) => {
+        events.push(`queue:${id}`);
+      },
+      del: async () => {},
+      rateLimit: async () => {},
+    } as never,
+  );
+
+  assert.equal(response.status, 201);
+  assert.match(events[0] ?? "", /^reserve:user-1:/);
+  assert.match(events[1] ?? "", /^put:/);
+  assert.match(events[2] ?? "", /^complete:upload-1:/);
+  assert.equal(events.some((event) => event.startsWith("cancel:")), false);
+});
+
+test("failed completion leaves a durable deletion record when provider deletion also fails", async () => {
+  const events: string[] = [];
+  const response = await handleUpload(
+    requestWith(imageFile("image/png")),
+    {
+      requireUser: async () => ({ id: "user-1" }),
+      token: "blob-token",
+      reserveUpload: async (_ownerId: string, pathname: string) => {
+        events.push("reserve");
+        return { id: "upload-1", pathname };
+      },
+      put: async (pathname: string) => ({
+        url: "https://store.private.blob.vercel-storage.com/image.png",
+        pathname,
+      }),
+      completeUpload: async () => {
+        throw new Error("database unavailable");
+      },
+      cancelReservation: async () => {
+        events.push("cancel");
+      },
+      queueDeletion: async (
+        id: string,
+        blob: { url: string; pathname: string },
+      ) => {
+        events.push(`queue:${id}:${blob.pathname}`);
+      },
+      del: async () => {
+        events.push("delete");
+        throw new Error("provider unavailable");
+      },
+      rateLimit: async () => {},
+    } as never,
+  );
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(events.slice(0, 2), ["reserve", "delete"]);
+  assert.match(events[2] ?? "", /^queue:upload-1:/);
+  assert.equal(events.includes("cancel"), false);
 });

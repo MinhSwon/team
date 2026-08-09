@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
+import type { BetterAuthRateLimitStorage } from "@better-auth/core";
+import { getIPFromHeader } from "@better-auth/core/utils/ip";
 
 import { prisma } from "@/lib/db";
 
@@ -18,12 +20,21 @@ export type RateLimitPolicy = {
   windowSeconds: number;
 };
 
+type RateLimitBucket = {
+  count: number;
+  resetAt: Date;
+  updatedAt: Date;
+};
+
 export interface RateLimitStore {
+  get(key: string): Promise<RateLimitBucket | null>;
+  set(key: string, value: RateLimitBucket): Promise<void>;
   consume(
     key: string,
     now: Date,
     windowSeconds: number,
   ): Promise<{ count: number; resetAt: Date }>;
+  pruneExpired(before: Date): Promise<number>;
 }
 
 export class RateLimitError extends Error {
@@ -36,6 +47,18 @@ export class RateLimitError extends Error {
 }
 
 const defaultStore: RateLimitStore = {
+  get: (key) =>
+    prisma.rateLimitBucket.findUnique({
+      where: { key },
+      select: { count: true, resetAt: true, updatedAt: true },
+    }),
+  set: async (key, value) => {
+    await prisma.rateLimitBucket.upsert({
+      where: { key },
+      update: value,
+      create: { key, ...value },
+    });
+  },
   consume: async (key, now, windowSeconds) => {
     const resetAt = new Date(now.getTime() + windowSeconds * 1000);
     const [row] = await prisma.$queryRaw<
@@ -58,6 +81,12 @@ const defaultStore: RateLimitStore = {
     if (!row) throw new Error("Rate-limit bucket update returned no row");
     return row;
   },
+  pruneExpired: async (before) => {
+    const result = await prisma.rateLimitBucket.deleteMany({
+      where: { resetAt: { lte: before } },
+    });
+    return result.count;
+  },
 };
 
 function hashedKey(scope: string, dimension: string, value: string): string {
@@ -66,10 +95,28 @@ function hashedKey(scope: string, dimension: string, value: string): string {
     .digest("hex");
 }
 
-function requestIp(request: Request): string | null {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const ip = forwarded || request.headers.get("x-real-ip")?.trim();
-  return ip && ip.length <= 128 ? ip : null;
+export function trustedProxyList(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return (
+    env.TRUSTED_PROXY_IPS?.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean) ?? []
+  );
+}
+
+export function requestIp(
+  request: Request,
+  trustedProxies = trustedProxyList(),
+): string | null {
+  if (trustedProxies.length === 0) return null;
+  for (const header of ["x-forwarded-for", "x-real-ip"]) {
+    const value = request.headers.get(header);
+    if (!value) continue;
+    const ip = getIPFromHeader(value, { trustedProxies });
+    if (ip) return ip;
+  }
+  return null;
 }
 
 export async function consumeRateLimit(
@@ -84,6 +131,60 @@ export async function consumeRateLimit(
       Math.max(1, Math.ceil((result.resetAt.getTime() - now.getTime()) / 1000)),
     );
   }
+}
+
+export function createBetterAuthRateLimitStorage(
+  store: RateLimitStore = defaultStore,
+  now: () => Date = () => new Date(),
+): BetterAuthRateLimitStorage {
+  const keyFor = (key: string) => hashedKey("better-auth", "ip-path", key);
+  return {
+    get: async (key) => {
+      const row = await store.get(keyFor(key));
+      return row
+        ? {
+            key,
+            count: row.count,
+            lastRequest: row.updatedAt.getTime(),
+          }
+        : null;
+    },
+    set: async (key, value) => {
+      const updatedAt = new Date(value.lastRequest);
+      await store.set(keyFor(key), {
+        count: value.count,
+        resetAt: new Date(updatedAt.getTime() + 15 * 60 * 1000),
+        updatedAt,
+      });
+    },
+    consume: async (key, rule) => {
+      const current = now();
+      const result = await store.consume(
+        keyFor(key),
+        current,
+        rule.window,
+      );
+      const allowed = result.count <= rule.max;
+      return {
+        allowed,
+        retryAfter: allowed
+          ? null
+          : Math.max(
+              1,
+              Math.ceil(
+                (result.resetAt.getTime() - current.getTime()) / 1000,
+              ),
+            ),
+      };
+    },
+  };
+}
+
+export function pruneExpiredRateLimitBuckets(
+  before = new Date(),
+  store: Pick<RateLimitStore, "pruneExpired"> = defaultStore,
+): Promise<number> {
+  return store.pruneExpired(before);
 }
 
 export async function enforceRateLimit(

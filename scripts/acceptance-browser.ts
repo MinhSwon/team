@@ -1,16 +1,11 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { loadEnvFile } from "node:process";
 
-import { chromium, type Locator, type Page } from "playwright-core";
+import type { Locator, Page } from "playwright-core";
 
-loadEnvFile();
+import { withFreshProductionServer } from "./acceptance-server";
 
-const appUrl = (
-  process.env.APP_URL ??
-  process.env.BETTER_AUTH_URL ??
-  "http://localhost:3000"
-).replace(/\/$/, "");
 const criterionTotal = 14;
 
 function browserPath(): string {
@@ -64,12 +59,29 @@ async function pageRequest(
   );
 }
 
-async function login(page: Page, email: string, password: string) {
+async function login(
+  page: Page,
+  appUrl: string,
+  email: string,
+  password: string,
+) {
   await page.goto(`${appUrl}/login`);
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(password);
+  const responsePromise = page.waitForResponse((response) =>
+    response.url().includes("/api/auth/sign-in/email"),
+  );
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL(`${appUrl}/feed`);
+  const response = await responsePromise;
+  assert.equal(
+    response.status(),
+    200,
+    `sign-in failed for ${email}: ${await response.text()}`,
+  );
+  await waitUntil(
+    async () => new URL(page.url()).pathname === "/feed",
+    `${email} sign-in redirect`,
+  );
 }
 
 async function waitUntil(
@@ -134,7 +146,7 @@ async function assertLayout(page: Page, mobile: boolean) {
   }
 }
 
-async function main() {
+async function runBrowserAcceptance(appUrl: string) {
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL is required");
   const {
     createAcceptanceIp,
@@ -144,6 +156,7 @@ async function main() {
   } = await import("./acceptance-support");
   seedDemoUsers();
   const { prisma } = await import("../src/lib/db");
+  const { chromium } = await import("playwright-core");
   const users = await prepareAcceptanceDatabase(prisma);
   const browser = await chromium.launch({
     executablePath: browserPath(),
@@ -151,14 +164,14 @@ async function main() {
   });
   const acceptanceIp = createAcceptanceIp();
   const contexts = await Promise.all(
-    demoUsers.map(() =>
+    [...demoUsers, null].map(() =>
       browser.newContext({
         baseURL: appUrl,
         extraHTTPHeaders: { "x-forwarded-for": acceptanceIp },
       }),
     ),
   );
-  const [alice, bob, carol] = await Promise.all(
+  const [alice, bob, carol, fresh] = await Promise.all(
     contexts.map((context) => context.newPage()),
   );
   const results: Array<{ name: string; error?: string }> = [];
@@ -169,6 +182,8 @@ async function main() {
   let bobSavedId: string | undefined;
   let bobPostId: string | undefined;
   let searchPlaceId: string | undefined;
+  const freshSuffix = randomUUID().replaceAll("-", "").slice(0, 12);
+  const freshEmail = `acceptance-${freshSuffix}@example.com`;
 
   async function criterion(
     index: number,
@@ -187,10 +202,46 @@ async function main() {
   }
 
   try {
-    await criterion(1, "demo users sign in through UI", async () => {
+    await criterion(1, "fresh registration and demo users sign in through UI", async () => {
+      await fresh.goto(`${appUrl}/register`);
+      await fresh
+        .getByLabel("Name", { exact: true })
+        .fill("Acceptance Fresh User");
+      await fresh
+        .getByLabel("Username", { exact: true })
+        .fill(`acceptance.${freshSuffix}`);
+      await fresh.getByLabel("Email", { exact: true }).fill(freshEmail);
+      await fresh
+        .getByLabel("Password", { exact: true })
+        .fill("AcceptanceFresh!123");
+      const registrationPromise = fresh.waitForResponse((response) =>
+        response.url().includes("/api/auth/sign-up/email"),
+      );
+      await fresh.getByRole("button", { name: "Create account" }).click();
+      const registration = await registrationPromise;
+      assert.equal(
+        registration.status(),
+        200,
+        `fresh registration failed: ${await registration.text()}`,
+      );
+      await waitUntil(
+        async () => new URL(fresh.url()).pathname === "/feed",
+        "fresh registration redirect",
+      );
+      const freshUser = await prisma.user.findUnique({
+        where: { email: freshEmail },
+        select: { id: true },
+      });
+      assert.ok(freshUser, "fresh UI registration must persist user");
+
       await Promise.all(
         demoUsers.map((user, index) =>
-          login([alice, bob, carol][index], user.email, user.password),
+          login(
+            [alice, bob, carol][index],
+            appUrl,
+            user.email,
+            user.password,
+          ),
         ),
       );
       for (const [page, user] of [
@@ -721,8 +772,19 @@ async function main() {
       await assertLayout(alice, false);
 
       await alice.setViewportSize({ width: 375, height: 812 });
-      await alice.goto(`${appUrl}/saved`);
-      await assertLayout(alice, true);
+      assert.ok(manualPlaceId);
+      for (const route of [
+        "/feed",
+        "/friends",
+        "/notifications",
+        "/profile/demo.alice",
+        `/places/${manualPlaceId}`,
+        "/saved",
+        "/add",
+      ]) {
+        await alice.goto(`${appUrl}${route}`);
+        await assertLayout(alice, true);
+      }
 
       const addLink = alice
         .getByRole("navigation", { name: "Mobile navigation" })
@@ -758,11 +820,12 @@ async function main() {
   } finally {
     await Promise.all(contexts.map((context) => context.close()));
     await browser.close();
+    await prisma.user.deleteMany({ where: { email: freshEmail } });
     await prisma.$disconnect();
   }
 }
 
-main().catch((error) => {
+withFreshProductionServer(({ appUrl }) => runBrowserAcceptance(appUrl)).catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

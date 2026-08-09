@@ -136,6 +136,7 @@ export default function SavedPlacesClient({
                     fill
                     sizes="(min-width: 640px) 6rem, 100vw"
                     src={item.imageUrl}
+                    unoptimized
                   />
                 ) : (
                   <span className="grid h-full place-items-center text-slate-600">

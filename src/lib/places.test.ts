@@ -458,6 +458,78 @@ test("parsePlaceInput enforces exact place name and address limits", () => {
   }
 });
 
+test("parsePlaceInput enforces area, website, Maps URL, and coordinate boundaries", () => {
+  const mapsPrefix = "https://www.google.com/maps/place/";
+  assert.doesNotThrow(() =>
+    parsePlaceInput({
+      type: "manual",
+      name: "Boundary Place",
+      address: "1 Boundary Way",
+      area: "a".repeat(120),
+      website: `https://example.com/${"w".repeat(2028)}`,
+      latitude: -90,
+      longitude: 180,
+    }),
+  );
+  assert.doesNotThrow(() =>
+    parsePlaceInput({
+      type: "mapsUrl",
+      url: `${mapsPrefix}${"m".repeat(2048 - mapsPrefix.length)}`,
+    }),
+  );
+
+  for (const input of [
+    {
+      type: "manual",
+      name: "Place",
+      address: "Address",
+      area: "a".repeat(121),
+    },
+    {
+      type: "manual",
+      name: "Place",
+      address: "Address",
+      website: `https://example.com/${"w".repeat(2029)}`,
+    },
+    {
+      type: "manual",
+      name: "Place",
+      address: "Address",
+      website: "http://example.com",
+    },
+    {
+      type: "manual",
+      name: "Place",
+      address: "Address",
+      website: "https://user:secret@example.com",
+    },
+    {
+      type: "manual",
+      name: "Place",
+      address: "Address",
+      latitude: -90.000001,
+    },
+    {
+      type: "manual",
+      name: "Place",
+      address: "Address",
+      longitude: 180.000001,
+    },
+    {
+      type: "mapsUrl",
+      url: `${mapsPrefix}${"m".repeat(2049 - mapsPrefix.length)}`,
+    },
+  ]) {
+    assert.throws(
+      () => parsePlaceInput(input),
+      (error: unknown) =>
+        error instanceof PlaceResolutionError &&
+        error.code === "INVALID_INPUT",
+      JSON.stringify(input),
+    );
+  }
+});
+
 test("searchPlaces rejects queries over 200 characters", async () => {
   await assert.rejects(
     searchPlaces("q".repeat(201), {

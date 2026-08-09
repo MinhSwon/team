@@ -1,24 +1,19 @@
 import assert from "node:assert/strict";
-import { loadEnvFile } from "node:process";
 
 import type { AcceptanceClient } from "./acceptance-support";
-
-loadEnvFile();
-
-const appUrl = (
-  process.env.APP_URL ??
-  process.env.BETTER_AUTH_URL ??
-  "http://localhost:3000"
-).replace(/\/$/, "");
+import { withFreshProductionServer } from "./acceptance-server";
 
 class CookieClient implements AcceptanceClient {
   private readonly cookies = new Map<string, string>();
 
-  constructor(private readonly ip: string) {}
+  constructor(
+    private readonly appUrl: string,
+    private readonly ip: string,
+  ) {}
 
   async request(path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
-    headers.set("Origin", appUrl);
+    headers.set("Origin", this.appUrl);
     headers.set("x-forwarded-for", this.ip);
     if (this.cookies.size > 0) {
       headers.set(
@@ -27,7 +22,7 @@ class CookieClient implements AcceptanceClient {
       );
     }
 
-    const response = await fetch(`${appUrl}${path}`, { ...init, headers });
+    const response = await fetch(`${this.appUrl}${path}`, { ...init, headers });
     for (const cookie of response.headers.getSetCookie()) {
       const [pair] = cookie.split(";", 1);
       const separator = pair.indexOf("=");
@@ -54,7 +49,7 @@ async function login(client: CookieClient, email: string, password: string) {
   );
 }
 
-async function main() {
+async function runSocialAcceptance(appUrl: string) {
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL is required");
   const {
     createAcceptanceIp,
@@ -68,9 +63,9 @@ async function main() {
   const { prisma } = await import("../src/lib/db");
   const acceptanceIp = createAcceptanceIp();
   const clients = {
-    alice: new CookieClient(acceptanceIp),
-    bob: new CookieClient(acceptanceIp),
-    carol: new CookieClient(acceptanceIp),
+    alice: new CookieClient(appUrl, acceptanceIp),
+    bob: new CookieClient(appUrl, acceptanceIp),
+    carol: new CookieClient(appUrl, acceptanceIp),
   };
 
   try {
@@ -90,7 +85,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+withFreshProductionServer(({ appUrl }) => runSocialAcceptance(appUrl)).catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

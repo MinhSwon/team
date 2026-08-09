@@ -1,7 +1,13 @@
+import { randomUUID } from "node:crypto";
+
 import { del, put } from "@vercel/blob";
 
 import {
-  recordUploadedBlob,
+  cancelBlobReservation,
+  completeBlobUpload,
+  queueBlobDeletion,
+  reserveBlobUpload,
+  type BlobReservation,
   type UploadedBlob,
 } from "@/lib/blob-uploads";
 import {
@@ -18,8 +24,8 @@ export type UploadPut = (
   pathname: string,
   body: File,
   options: {
-    access: "public";
-    addRandomSuffix: true;
+    access: "private";
+    addRandomSuffix: false;
     contentType: string;
     token: string;
   },
@@ -27,11 +33,21 @@ export type UploadPut = (
 
 export type UploadDependencies = {
   requireUser: () => Promise<{ id: string }>;
-  put: UploadPut;
-  recordUpload: (
+  reserveUpload: (
     ownerId: string,
+    pathname: string,
+  ) => Promise<BlobReservation>;
+  put: UploadPut;
+  completeUpload: (
+    id: string,
     blob: { url: string; pathname: string },
   ) => Promise<UploadedBlob>;
+  cancelReservation: (id: string) => Promise<void>;
+  queueDeletion: (
+    id: string,
+    blob: { url: string; pathname: string },
+    error?: unknown,
+  ) => Promise<void>;
   del: (url: string) => Promise<void>;
   rateLimit: (request: Request, userId: string) => Promise<void>;
   token?: string;
@@ -84,7 +100,12 @@ function hasImageSignature(type: ImageType, bytes: Uint8Array): boolean {
   );
 }
 
-function uploadPath(userId: string, file: File, type: ImageType): string {
+function uploadPath(
+  userId: string,
+  id: string,
+  file: File,
+  type: ImageType,
+): string {
   const base =
     file.name
       .replace(/\.[^.]+$/, "")
@@ -94,7 +115,7 @@ function uploadPath(userId: string, file: File, type: ImageType): string {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "") || "place";
 
-  return `places/${userId}/${base}.${imageExtensions[type]}`;
+  return `places/${userId}/${id}-${base}.${imageExtensions[type]}`;
 }
 
 export async function handleUpload(
@@ -163,28 +184,53 @@ export async function handleUpload(
     );
   }
 
+  let reservation: BlobReservation;
   try {
-    const blob = await dependencies.put(
-      uploadPath(currentUser.id, file, file.type),
+    reservation = await dependencies.reserveUpload(
+      currentUser.id,
+      uploadPath(currentUser.id, randomUUID(), file, file.type),
+    );
+  } catch {
+    return Response.json({ error: "Image upload failed" }, { status: 502 });
+  }
+
+  let blob: { url: string; pathname: string };
+  try {
+    blob = await dependencies.put(
+      reservation.pathname,
       file,
       {
-        access: "public",
-        addRandomSuffix: true,
+        access: "private",
+        addRandomSuffix: false,
         contentType: file.type,
         token: dependencies.token,
       },
     );
-
-    try {
-      const upload = await dependencies.recordUpload(currentUser.id, blob);
-      return Response.json(upload, { status: 201 });
-    } catch {
-      try {
-        await dependencies.del(blob.url);
-      } catch {}
-      return Response.json({ error: "Image upload failed" }, { status: 502 });
-    }
   } catch {
+    try {
+      await dependencies.cancelReservation(reservation.id);
+    } catch {}
+    return Response.json({ error: "Image upload failed" }, { status: 502 });
+  }
+
+  try {
+    const upload = await dependencies.completeUpload(reservation.id, blob);
+    return Response.json(upload, { status: 201 });
+  } catch {
+    try {
+      await dependencies.del(blob.url);
+      try {
+        await dependencies.cancelReservation(reservation.id);
+      } catch {}
+    } catch (deleteError) {
+      try {
+        await dependencies.queueDeletion(
+          reservation.id,
+          blob,
+          deleteError,
+        );
+      } catch {}
+    }
     return Response.json({ error: "Image upload failed" }, { status: 502 });
   }
 }
@@ -192,8 +238,11 @@ export async function handleUpload(
 export function POST(request: Request): Promise<Response> {
   return handleUpload(request, {
     requireUser: requireCurrentUser,
+    reserveUpload: reserveBlobUpload,
     put: (pathname, body, options) => put(pathname, body, options),
-    recordUpload: recordUploadedBlob,
+    completeUpload: completeBlobUpload,
+    cancelReservation: cancelBlobReservation,
+    queueDeletion: queueBlobDeletion,
     del: (url) => del(url, { token: process.env.BLOB_READ_WRITE_TOKEN }),
     rateLimit: (nextRequest, userId) =>
       enforceRateLimit(nextRequest, userId, "upload"),

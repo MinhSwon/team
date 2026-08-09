@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { mediaUrl } from "@/lib/media";
 import { normalizeUsername } from "@/lib/validation";
 
 export type ProfileUserRecord = {
@@ -77,8 +78,8 @@ const defaultPersistence: ProfilePersistence = {
       where: { username },
       select: publicUserSelect,
     }),
-  findVisibleProfile: (viewerId, username) =>
-    prisma.user.findFirst({
+  findVisibleProfile: async (viewerId, username) => {
+    const user = await prisma.user.findFirst({
       where: {
         username,
         OR: [
@@ -116,7 +117,7 @@ const defaultPersistence: ProfilePersistence = {
                   },
                 },
                 images: {
-                  select: { url: true },
+                  select: { blobUploadId: true },
                   orderBy: { sortOrder: "asc" },
                   take: 1,
                 },
@@ -126,7 +127,21 @@ const defaultPersistence: ProfilePersistence = {
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         },
       },
-    }),
+    });
+    if (!user) return null;
+    return {
+      ...user,
+      posts: user.posts.map((post) => ({
+        ...post,
+        savedPlace: {
+          ...post.savedPlace,
+          images: post.savedPlace.images.map(({ blobUploadId }) => ({
+            url: mediaUrl(blobUploadId),
+          })),
+        },
+      })),
+    };
+  },
   updateUser: (id, data) =>
     prisma.user.update({
       where: { id },

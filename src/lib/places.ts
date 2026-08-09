@@ -84,18 +84,46 @@ function invalidInput(): never {
   );
 }
 
-function optionalText(value: unknown): string | null | undefined {
+function optionalText(
+  value: unknown,
+  maxLength: number,
+): string | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
-  if (typeof value !== "string") invalidInput();
+  if (typeof value !== "string" || value.length > maxLength) invalidInput();
   return value;
 }
 
-function optionalNumber(value: unknown): number | null | undefined {
+function optionalCoordinate(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): number | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
-  if (typeof value !== "number" || !Number.isFinite(value)) invalidInput();
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    invalidInput();
+  }
   return value;
+}
+
+function optionalWebsite(value: unknown): string | null | undefined {
+  const website = optionalText(value, PLACE_LIMITS.website);
+  if (website == null || !website.trim()) return website;
+  try {
+    const url = new URL(website);
+    if (url.protocol !== "https:" || url.username || url.password) {
+      invalidInput();
+    }
+    return website;
+  } catch {
+    return invalidInput();
+  }
 }
 
 function requiredText(value: unknown, maxLength: number): string {
@@ -114,7 +142,13 @@ export function parsePlaceInput(value: unknown): PlaceInput {
   if (!input || typeof input.type !== "string") invalidInput();
 
   if (input.type === "mapsUrl") {
-    if (typeof input.url !== "string" || !input.url.trim()) invalidInput();
+    if (
+      typeof input.url !== "string" ||
+      !input.url.trim() ||
+      input.url.length > PLACE_LIMITS.mapsUrl
+    ) {
+      invalidInput();
+    }
     return { type: "mapsUrl", url: input.url };
   }
 
@@ -123,10 +157,10 @@ export function parsePlaceInput(value: unknown): PlaceInput {
       type: "manual",
       name: requiredText(input.name, PLACE_LIMITS.name),
       address: requiredText(input.address, PLACE_LIMITS.address),
-      area: optionalText(input.area),
-      latitude: optionalNumber(input.latitude),
-      longitude: optionalNumber(input.longitude),
-      website: optionalText(input.website),
+      area: optionalText(input.area, PLACE_LIMITS.area),
+      latitude: optionalCoordinate(input.latitude, -90, 90),
+      longitude: optionalCoordinate(input.longitude, -180, 180),
+      website: optionalWebsite(input.website),
     };
   }
 
@@ -155,10 +189,12 @@ export function parsePlaceInput(value: unknown): PlaceInput {
           id: candidate.id,
           name,
           address,
-          area: optionalText(candidate.area) ?? null,
-          latitude: optionalNumber(candidate.latitude) ?? null,
-          longitude: optionalNumber(candidate.longitude) ?? null,
-          website: optionalText(candidate.website) ?? null,
+          area: optionalText(candidate.area, PLACE_LIMITS.area) ?? null,
+          latitude:
+            optionalCoordinate(candidate.latitude, -90, 90) ?? null,
+          longitude:
+            optionalCoordinate(candidate.longitude, -180, 180) ?? null,
+          website: optionalWebsite(candidate.website) ?? null,
         },
       };
     }
@@ -177,10 +213,10 @@ export function parsePlaceInput(value: unknown): PlaceInput {
         externalPlaceId: candidate.externalPlaceId,
         name,
         address,
-        area: optionalText(candidate.area),
-        latitude: optionalNumber(candidate.latitude),
-        longitude: optionalNumber(candidate.longitude),
-        website: optionalText(candidate.website),
+        area: optionalText(candidate.area, PLACE_LIMITS.area),
+        latitude: optionalCoordinate(candidate.latitude, -90, 90),
+        longitude: optionalCoordinate(candidate.longitude, -180, 180),
+        website: optionalWebsite(candidate.website),
       },
     };
   }
@@ -290,8 +326,30 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function number(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function coordinate(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): number | null {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= minimum &&
+    value <= maximum
+    ? value
+    : null;
+}
+
+function providerWebsite(value: unknown): string | null {
+  const website = text(value);
+  if (!website || website.length > PLACE_LIMITS.website) return null;
+  try {
+    const url = new URL(website);
+    return url.protocol === "https:" && !url.username && !url.password
+      ? website
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function googleCandidate(value: unknown): GooglePlaceCandidate | null {
@@ -317,9 +375,9 @@ function googleCandidate(value: unknown): GooglePlaceCandidate | null {
     externalPlaceId,
     name,
     address,
-    latitude: number(location?.latitude),
-    longitude: number(location?.longitude),
-    website: text(item?.websiteUri),
+    latitude: coordinate(location?.latitude, -90, 90),
+    longitude: coordinate(location?.longitude, -180, 180),
+    website: providerWebsite(item?.websiteUri),
   };
 }
 
@@ -370,6 +428,13 @@ async function searchGoogle(
 }
 
 function mapsUrl(rawUrl: string): URL {
+  if (rawUrl.length > PLACE_LIMITS.mapsUrl) {
+    throw new PlaceResolutionError(
+      "Invalid place input",
+      "INVALID_INPUT",
+      400,
+    );
+  }
   let url: URL;
   try {
     decodeURIComponent(rawUrl);
@@ -391,7 +456,12 @@ function mapsUrl(rawUrl: string): URL {
     host === "maps.app.goo.gl" ||
     (host === "goo.gl" && googleMapsPath);
 
-  if (url.protocol !== "https:" || !allowed) {
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    !allowed
+  ) {
     throw new PlaceResolutionError(
       "Only Google Maps URLs are supported",
       "INVALID_MAPS_URL",

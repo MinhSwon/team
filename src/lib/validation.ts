@@ -3,6 +3,9 @@ export class ValidationError extends Error {}
 export const PLACE_LIMITS = {
   name: 160,
   address: 500,
+  area: 120,
+  website: 2048,
+  mapsUrl: 2048,
   query: 200,
   review: 2000,
 } as const;

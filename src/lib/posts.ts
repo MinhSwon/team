@@ -17,6 +17,7 @@ import {
   resolvePlace,
   type PlaceInput,
 } from "@/lib/places";
+import { mediaUrl } from "@/lib/media";
 import {
   ValidationError,
   assertPlaceReview,
@@ -471,7 +472,7 @@ function prismaStore(
         ownerId: userId,
         lifecycle: "CLAIMED",
       },
-      select: { id: true, url: true },
+      select: { id: true },
     });
     const byId = new Map(uploads.map((upload) => [upload.id, upload]));
     return savedImages.map((image) => {
@@ -481,7 +482,7 @@ function prismaStore(
       }
       return {
         blobUploadId: upload.id,
-        url: upload.url,
+        url: mediaUrl(upload.id),
         caption: image.caption,
       };
     });
@@ -489,12 +490,10 @@ function prismaStore(
 
   async function markImagesPendingDelete(savedPlaceId: string) {
     const images = await client.savedPlaceImage.findMany({
-      where: { savedPlaceId, blobUploadId: { not: null } },
+      where: { savedPlaceId },
       select: { blobUploadId: true },
     });
-    const uploadIds = images.flatMap(({ blobUploadId }) =>
-      blobUploadId ? [blobUploadId] : [],
-    );
+    const uploadIds = images.map(({ blobUploadId }) => blobUploadId);
     if (uploadIds.length > 0) {
       await client.blobUpload.updateMany({
         where: { id: { in: uploadIds }, lifecycle: "CLAIMED" },

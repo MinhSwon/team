@@ -117,8 +117,12 @@ class FakePostsPersistence implements PostsPersistence {
       id,
       ownerId,
       url: `https://blob.example/${id}.webp`,
+      sourceUrl: null,
       pathname: `places/${ownerId}/${id}.webp`,
       lifecycle,
+      leaseUntil: null,
+      deleteAttempts: 0,
+      lastError: null,
       createdAt,
       updatedAt: createdAt,
     });
@@ -230,6 +234,7 @@ class FakePostsPersistence implements PostsPersistence {
       if (!blob) {
         throw new PostError("Invalid image upload", "INVALID_INPUT", 400);
       }
+      assert.ok(blob.url);
       blob.lifecycle = "CLAIMED";
       return {
         blobUploadId: blob.id,
@@ -1233,8 +1238,12 @@ test("delete saved place by author cascades post and images", async () => {
         id: "upload-1",
         ownerId: "user-a",
         url: "https://blob.example/upload-1.webp",
+        sourceUrl: null,
         pathname: "places/user-a/upload-1.webp",
         lifecycle: "PENDING_DELETE",
+        leaseUntil: null,
+        deleteAttempts: 0,
+        lastError: null,
         createdAt,
         updatedAt: createdAt,
       },

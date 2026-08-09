@@ -26,9 +26,14 @@ enum SavedPlaceStatus {
 }
 
 enum BlobLifecycle {
+  RESERVED
   UPLOADED
   CLAIMED
+  PENDING_PRIVATE_COPY
+  CONVERTING
+  PENDING_PUBLIC_DELETE
   PENDING_DELETE
+  DELETING
 }
 
 model User {
@@ -154,29 +159,34 @@ model UserSavedPlace {
 model SavedPlaceImage {
   id           String         @id @default(uuid())
   savedPlaceId String
-  blobUploadId String?        @unique
+  blobUploadId String         @unique
   url          String
   caption      String?
   sortOrder    Int            @default(0)
   savedPlace   UserSavedPlace @relation(fields: [savedPlaceId], references: [id], onDelete: Cascade)
-  blobUpload   BlobUpload?    @relation(fields: [blobUploadId], references: [id], onDelete: SetNull)
+  blobUpload   BlobUpload     @relation(fields: [blobUploadId], references: [id], onDelete: Restrict)
 
   @@index([savedPlaceId, sortOrder])
 }
 
 model BlobUpload {
-  id        String           @id @default(uuid())
-  ownerId   String
-  url       String           @unique
-  pathname  String           @unique
-  lifecycle BlobLifecycle    @default(UPLOADED)
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
-  owner     User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  image     SavedPlaceImage?
+  id             String           @id @default(uuid())
+  ownerId        String
+  url            String?          @unique
+  sourceUrl      String?          @unique
+  pathname       String           @unique
+  lifecycle      BlobLifecycle    @default(RESERVED)
+  leaseUntil     DateTime?
+  deleteAttempts Int              @default(0)
+  lastError      String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  owner          User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  image          SavedPlaceImage?
 
   @@index([ownerId, lifecycle])
   @@index([lifecycle, createdAt])
+  @@index([lifecycle, leaseUntil])
 }
 
 model RateLimitBucket {
