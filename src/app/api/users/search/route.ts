@@ -8,18 +8,25 @@ import {
   RateLimitError,
   rateLimitResponse,
 } from "@/lib/rate-limit";
+import { PLACE_LIMITS } from "@/lib/validation";
 
-export async function GET(request: Request) {
-  try {
-    const currentUser = await requireCurrentUser();
-    await enforceRateLimit(request, currentUser.id, "userSearch");
-    const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+type UserSearchDependencies = {
+  requireUser: () => Promise<{ id: string }>;
+  rateLimit: (request: Request, userId: string) => Promise<void>;
+  findUsers: (
+    currentUserId: string,
+    query: string,
+  ) => Promise<Array<{ id: string; username: string; name: string }>>;
+};
 
-    if (!query) return Response.json({ users: [] });
-
-    const users = await prisma.user.findMany({
+const dependencies: UserSearchDependencies = {
+  requireUser: requireCurrentUser,
+  rateLimit: (request, userId) =>
+    enforceRateLimit(request, userId, "userSearch"),
+  findUsers: (currentUserId, query) =>
+    prisma.user.findMany({
       where: {
-        id: { not: currentUser.id },
+        id: { not: currentUserId },
         OR: [
           { username: { contains: query, mode: "insensitive" } },
           { name: { contains: query, mode: "insensitive" } },
@@ -32,7 +39,27 @@ export async function GET(request: Request) {
       },
       orderBy: [{ username: "asc" }, { id: "asc" }],
       take: 20,
-    });
+    }),
+};
+
+export async function handleUserSearch(
+  request: Request,
+  services: UserSearchDependencies = dependencies,
+) {
+  try {
+    const currentUser = await services.requireUser();
+    await services.rateLimit(request, currentUser.id);
+    const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+
+    if (!query) return Response.json({ users: [] });
+    if (query.length > PLACE_LIMITS.query) {
+      return Response.json(
+        { error: "Search query is too long" },
+        { status: 400 },
+      );
+    }
+
+    const users = await services.findUsers(currentUser.id, query);
 
     return Response.json({ users });
   } catch (error) {
@@ -42,4 +69,8 @@ export async function GET(request: Request) {
     if (error instanceof RateLimitError) return rateLimitResponse(error);
     return Response.json({ error: "Internal server error" }, { status: 500 });
   }
+}
+
+export async function GET(request: Request) {
+  return handleUserSearch(request);
 }

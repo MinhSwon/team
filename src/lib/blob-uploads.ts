@@ -276,9 +276,12 @@ const defaultCleanupStore: BlobCleanupStore = {
     prisma.$queryRaw<CleanupCandidate[]>(Prisma.sql`
       WITH candidates AS (
         SELECT "id"
-          FROM "BlobUpload"
+         FROM "BlobUpload"
          WHERE (
-           "lifecycle" = 'PENDING_DELETE'
+           (
+             "lifecycle" = 'PENDING_DELETE'
+             AND ("leaseUntil" IS NULL OR "leaseUntil" < ${now})
+           )
            OR (
              "lifecycle" IN ('RESERVED', 'UPLOADED')
              AND "createdAt" < ${orphanCutoff}
@@ -365,7 +368,11 @@ const defaultConversionStore: BlobConversionStore = {
     `),
   recordPrivateCopy: async (id, leaseUntil, blob) => {
     const result = await prisma.blobUpload.updateMany({
-      where: { id, lifecycle: "CONVERTING", leaseUntil },
+      where: {
+        id,
+        lifecycle: { in: ["CONVERTING", "PENDING_DELETE"] },
+        leaseUntil,
+      },
       data: {
         url: blob.url,
         pathname: blob.pathname,

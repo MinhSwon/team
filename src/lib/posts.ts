@@ -508,14 +508,19 @@ function prismaStore(
       await client.blobUpload.updateMany({
         where: {
           id: { in: uploadIds },
+          lifecycle: "CONVERTING",
+        },
+        data: { lifecycle: "PENDING_DELETE" },
+      });
+      await client.blobUpload.updateMany({
+        where: {
+          id: { in: uploadIds },
           lifecycle: {
             in: [
               "UPLOADED",
               "CLAIMED",
               "PENDING_PRIVATE_COPY",
-              "CONVERTING",
               "PENDING_PUBLIC_DELETE",
-              "PENDING_DELETE",
             ],
           },
         },

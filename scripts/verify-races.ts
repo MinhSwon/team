@@ -90,6 +90,10 @@ async function childMain() {
   const { createPostComment, togglePostLike } = await import(
     "../src/lib/interactions"
   );
+  const { cleanupBlobUploads, convertLegacyBlobUploads } = await import(
+    "../src/lib/blob-uploads"
+  );
+  const { deleteSavedPlace } = await import("../src/lib/posts");
 
   const ownerId = `race-owner-${randomUUID()}`;
   const viewerId = `race-viewer-${randomUUID()}`;
@@ -206,6 +210,169 @@ async function childMain() {
     );
   }
 
+  async function verifyBlobConversionDeleteRace() {
+    const blobPlaceId = `race-blob-place-${randomUUID()}`;
+    const blobSavedPlaceId = `race-blob-saved-${randomUUID()}`;
+    const blobId = `race-blob-${randomUUID()}`;
+    const imageId = `race-image-${randomUUID()}`;
+    const sourceUrl =
+      "https://owned.public.blob.vercel-storage.com/race-source.png";
+    const pathname = `places/${ownerId}/legacy/race-source.png`;
+    const privateUrl =
+      `https://owned.private.blob.vercel-storage.com/${pathname}`;
+    const conversionNow = new Date();
+    const conversionLease = new Date(
+      conversionNow.getTime() + 5 * 60 * 1000,
+    );
+
+    await prisma.place.create({
+      data: {
+        id: blobPlaceId,
+        name: "Blob Race Place",
+        normalizedName: "blob race place",
+        address: "2 Race Way",
+        normalizedAddress: "2 race way",
+      },
+    });
+    await prisma.userSavedPlace.create({
+      data: {
+        id: blobSavedPlaceId,
+        userId: ownerId,
+        placeId: blobPlaceId,
+        tags: [],
+      },
+    });
+    await prisma.blobUpload.create({
+      data: {
+        id: blobId,
+        ownerId,
+        sourceUrl,
+        pathname,
+        lifecycle: "PENDING_PRIVATE_COPY",
+      },
+    });
+    await prisma.savedPlaceImage.create({
+      data: {
+        id: imageId,
+        savedPlaceId: blobSavedPlaceId,
+        blobUploadId: blobId,
+        url: `/api/media/${blobId}`,
+        sortOrder: 0,
+      },
+    });
+
+    let signalPutStarted = () => {};
+    const putStarted = new Promise<void>((resolve) => {
+      signalPutStarted = resolve;
+    });
+    let releasePut = () => {};
+    const putBlocked = new Promise<void>((resolve) => {
+      releasePut = resolve;
+    });
+
+    const conversion = convertLegacyBlobUploads({
+      now: conversionNow,
+      allowedHosts: ["owned.public.blob.vercel-storage.com"],
+      get: async () => ({
+        statusCode: 200,
+        stream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new Uint8Array([
+                0x89,
+                0x50,
+                0x4e,
+                0x47,
+                0x0d,
+                0x0a,
+                0x1a,
+                0x0a,
+              ]),
+            );
+            controller.close();
+          },
+        }),
+        blob: { contentType: "image/png", size: 8 },
+      }),
+      put: async () => {
+        signalPutStarted();
+        await putBlocked;
+        return { url: privateUrl, pathname };
+      },
+      del: async () => {
+        throw new Error("defer public deletion to cleanup");
+      },
+      token: "mock-token",
+    });
+
+    await putStarted;
+    assert.deepEqual(
+      await prisma.blobUpload.findUnique({
+        where: { id: blobId },
+        select: { lifecycle: true, leaseUntil: true },
+      }),
+      { lifecycle: "CONVERTING", leaseUntil: conversionLease },
+    );
+
+    await deleteSavedPlace(ownerId, blobSavedPlaceId);
+    assert.deepEqual(
+      await prisma.blobUpload.findUnique({
+        where: { id: blobId },
+        select: { lifecycle: true, leaseUntil: true },
+      }),
+      { lifecycle: "PENDING_DELETE", leaseUntil: conversionLease },
+    );
+
+    const earlyDeletes: string[] = [];
+    assert.deepEqual(
+      await cleanupBlobUploads({
+        now: new Date(conversionLease.getTime() - 1),
+        del: async (reference) => void earlyDeletes.push(reference),
+      }),
+      { deleted: 0, failed: 0 },
+    );
+    assert.deepEqual(earlyDeletes, []);
+
+    releasePut();
+    assert.deepEqual(await conversion, { converted: 0, failed: 1 });
+    assert.deepEqual(
+      await prisma.blobUpload.findUnique({
+        where: { id: blobId },
+        select: {
+          lifecycle: true,
+          leaseUntil: true,
+          url: true,
+          sourceUrl: true,
+          pathname: true,
+        },
+      }),
+      {
+        lifecycle: "PENDING_DELETE",
+        leaseUntil: conversionLease,
+        url: privateUrl,
+        sourceUrl,
+        pathname,
+      },
+    );
+
+    const cleanupDeletes: string[] = [];
+    assert.deepEqual(
+      await cleanupBlobUploads({
+        now: new Date(conversionLease.getTime() + 1),
+        del: async (reference) => void cleanupDeletes.push(reference),
+      }),
+      { deleted: 1, failed: 0 },
+    );
+    assert.deepEqual(new Set(cleanupDeletes), new Set([privateUrl, sourceUrl]));
+    assert.equal(
+      await prisma.blobUpload.count({ where: { id: blobId } }),
+      0,
+    );
+    console.log(
+      "PASS Blob conversion/delete race: leased delete intent retained both references for cleanup",
+    );
+  }
+
   try {
     await verifyScenario(
       "PostLike",
@@ -222,6 +389,7 @@ async function childMain() {
         }),
       "POST_COMMENTED",
     );
+    await verifyBlobConversionDeleteRace();
   } finally {
     await monitor.end();
     await prisma.$disconnect();

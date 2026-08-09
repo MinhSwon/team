@@ -72,7 +72,8 @@ async function runSocialAcceptance(appUrl: string) {
   const signupEmail = `auth-sanitize-${signupId}@example.com`;
 
   try {
-    const signup = await new CookieClient(appUrl, acceptanceIp).request(
+    const signupClient = new CookieClient(appUrl, acceptanceIp);
+    const signup = await signupClient.request(
       "/api/auth/sign-up/email",
       {
         method: "POST",
@@ -99,6 +100,50 @@ async function runSocialAcceptance(appUrl: string) {
       { name: "Direct Auth User", image: null },
     );
     console.log("Direct auth signup sanitation: PASS");
+
+    for (const body of [
+      { image: "https://images.example/update-user.png" },
+      { name: "   " },
+      { name: "n".repeat(81) },
+      { username: "bad username" },
+    ]) {
+      const rejected = await signupClient.request("/api/auth/update-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      assert.equal(
+        rejected.status,
+        400,
+        `invalid auth update persisted: ${JSON.stringify(body)} ${JSON.stringify(rejected.body)}`,
+      );
+    }
+    const updatedUsername = `auth.updated.${signupId.slice(0, 12)}`;
+    const updated = await signupClient.request("/api/auth/update-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "  Updated Auth User  ",
+        username: `  ${updatedUsername.toUpperCase()}  `,
+      }),
+    });
+    assert.equal(
+      updated.status,
+      200,
+      `valid auth update failed: ${JSON.stringify(updated.body)}`,
+    );
+    assert.deepEqual(
+      await prisma.user.findUnique({
+        where: { email: signupEmail },
+        select: { name: true, username: true, image: true },
+      }),
+      {
+        name: "Updated Auth User",
+        username: updatedUsername,
+        image: null,
+      },
+    );
+    console.log("Direct auth update sanitation: PASS");
 
     await Promise.all(
       demoUsers.map((user, index) =>
