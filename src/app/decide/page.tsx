@@ -1,8 +1,9 @@
 'use client'
+/* eslint-disable @next/next/no-img-element -- recommendation images may come from user/imported URLs. */
 
 import { useState } from 'react'
 import Navigation from '@/components/Navigation'
-import { Sparkles, Users, Clock, DollarSign, Navigation as DistIcon, CheckCircle2, Heart, ArrowRight } from 'lucide-react'
+import { Sparkles, Users, Clock, DollarSign, Navigation as DistIcon, CheckCircle2, Heart, ArrowRight, MapPin, LocateFixed, Loader2 } from 'lucide-react'
 
 interface RecResult {
   id: string
@@ -20,24 +21,84 @@ interface RecResult {
   groupWantToGoCount: number
 }
 
+type Activity = 'EAT' | 'CAFE' | 'CHILL' | 'ENTERTAINMENT' | 'ACTIVITY' | 'DATE'
+type Time = 'NOW' | 'TONIGHT' | 'TOMORROW' | 'WEEKEND'
+type Budget = 'UNDER_100K' | '100_300K' | '300_500K' | '500K_PLUS'
+type Distance = '1KM' | '3KM' | '5KM' | '10KM'
+
 export default function DecidePage() {
   const [who, setWho] = useState<'JUST_ME' | 'GROUP'>('GROUP')
-  const [activity, setActivity] = useState<'EAT' | 'CAFE' | 'CHILL' | 'ENTERTAINMENT' | 'ACTIVITY' | 'DATE'>('CAFE')
-  const [time, setTime] = useState<'NOW' | 'TONIGHT' | 'TOMORROW' | 'WEEKEND'>('NOW')
-  const [budget, setBudget] = useState<'UNDER_100K' | '100_300K' | '300_500K' | '500K_PLUS'>('100_300K')
-  const [distance, setDistance] = useState<'1KM' | '3KM' | '5KM' | '10KM'>('3KM')
+  const [activity, setActivity] = useState<Activity>('CAFE')
+  const [time, setTime] = useState<Time>('NOW')
+  const [budget, setBudget] = useState<Budget>('100_300K')
+  const [distance, setDistance] = useState<Distance>('3KM')
 
   const [results, setResults] = useState<RecResult[]>([])
   const [isCalculated, setIsCalculated] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [locationText, setLocationText] = useState('')
+  const [locationCoords, setLocationCoords] = useState<{ latitude: number; longitude: number } | null>(null)
+  const [locationLoading, setLocationLoading] = useState(false)
+  const [locationMessage, setLocationMessage] = useState('')
+
+  const resolveAddress = async (address = locationText) => {
+    const query = address.trim()
+    if (query.length < 3) {
+      setLocationMessage('Hãy nhập địa chỉ cụ thể hơn.')
+      return null
+    }
+    setLocationLoading(true)
+    setLocationMessage('Đang tìm tọa độ địa chỉ...')
+    try {
+      const response = await fetch(`/api/geocode?address=${encodeURIComponent(query)}`)
+      const data = await response.json()
+      if (!response.ok || !data.success) throw new Error(data.error || 'Không tìm thấy địa chỉ.')
+      const coords = { latitude: Number(data.latitude), longitude: Number(data.longitude) }
+      setLocationCoords(coords)
+      setLocationMessage(data.displayName ? `Đã xác định: ${data.displayName}` : 'Đã xác định vị trí, khoảng cách sẽ tính từ đây.')
+      return coords
+    } catch (error) {
+      setLocationCoords(null)
+      setLocationMessage(error instanceof Error ? error.message : 'Không thể xác định địa chỉ.')
+      return null
+    } finally {
+      setLocationLoading(false)
+    }
+  }
+
+  const useCurrentGps = () => {
+    if (!navigator.geolocation) {
+      setLocationMessage('Trình duyệt không hỗ trợ GPS. Bạn hãy nhập địa chỉ thủ công.')
+      return
+    }
+    setLocationLoading(true)
+    setLocationMessage('Đang xin quyền truy cập vị trí...')
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const coords = { latitude: position.coords.latitude, longitude: position.coords.longitude }
+        setLocationCoords(coords)
+        setLocationText('Vị trí hiện tại (GPS)')
+        setLocationMessage('Đã lấy vị trí GPS hiện tại.')
+        setLocationLoading(false)
+      },
+      () => {
+        setLocationMessage('Không lấy được GPS. Bạn hãy nhập địa chỉ để tiếp tục.')
+        setLocationLoading(false)
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
+    )
+  }
 
   const handleRunRecommendation = async () => {
     setIsLoading(true)
     try {
+      let coords = locationCoords
+      if (locationText.trim() && !coords) coords = await resolveAddress()
+      if (locationText.trim() && !coords) return
       const res = await fetch('/api/decide', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ who, activity, time, budget, distance }),
+        body: JSON.stringify({ who, activity, time, budget, distance, userLat: coords?.latitude, userLng: coords?.longitude }),
       })
       const data = await res.json()
       if (data.success) {
@@ -47,7 +108,7 @@ export default function DecidePage() {
     } catch {
       // Handled
     } finally {
-      setIsLoading(false)
+        setIsLoading(false)
     }
   }
 
@@ -70,6 +131,28 @@ export default function DecidePage() {
 
         {/* Wizard Context Form */}
         <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
+          {/* Current location */}
+          <div className="space-y-2 rounded-2xl border border-indigo-500/30 bg-indigo-950/20 p-4">
+            <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-300">
+              <MapPin className="h-4 w-4 text-indigo-300" /> Bạn đang ở đâu?
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                value={locationText}
+                onChange={(event) => { setLocationText(event.target.value); setLocationCoords(null); setLocationMessage('') }}
+                placeholder="Nhập địa chỉ hiện tại, ví dụ: 27 Nguyễn Đức Kế, Quận 1"
+                className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-3 text-sm text-white outline-none transition focus:border-indigo-400"
+              />
+              <button type="button" onClick={() => void resolveAddress()} disabled={locationLoading || !locationText.trim()} className="inline-flex items-center justify-center gap-2 rounded-xl border border-indigo-400/50 bg-indigo-500/15 px-4 py-3 text-xs font-bold text-indigo-200 hover:bg-indigo-500/25 disabled:cursor-not-allowed disabled:opacity-50">
+                {locationLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <MapPin className="h-4 w-4" />} Xác định địa chỉ
+              </button>
+              <button type="button" onClick={useCurrentGps} disabled={locationLoading} className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-400/50 bg-emerald-500/15 px-4 py-3 text-xs font-bold text-emerald-200 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50">
+                <LocateFixed className="h-4 w-4" /> Dùng GPS
+              </button>
+            </div>
+            <p className={`text-xs ${locationCoords ? 'text-emerald-300' : 'text-slate-500'}`}>{locationMessage || 'Không bắt buộc: nếu bỏ trống, hệ thống dùng trung tâm TP. Hồ Chí Minh để ước tính khoảng cách.'}</p>
+          </div>
+
           {/* Who */}
           <div className="space-y-2">
             <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -115,7 +198,7 @@ export default function DecidePage() {
               ].map((act) => (
                 <button
                   key={act.key}
-                  onClick={() => setActivity(act.key as any)}
+                  onClick={() => setActivity(act.key as Activity)}
                   className={`p-3 rounded-2xl font-semibold text-xs border transition-all text-left ${
                     activity === act.key
                       ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-600/30'
@@ -144,7 +227,7 @@ export default function DecidePage() {
                 ].map((t) => (
                   <button
                     key={t.key}
-                    onClick={() => setTime(t.key as any)}
+                    onClick={() => setTime(t.key as Time)}
                     className={`p-2.5 rounded-xl font-semibold text-xs border transition-all ${
                       time === t.key
                         ? 'bg-slate-800 border-amber-400 text-amber-300'
@@ -171,7 +254,7 @@ export default function DecidePage() {
                 ].map((b) => (
                   <button
                     key={b.key}
-                    onClick={() => setBudget(b.key as any)}
+                    onClick={() => setBudget(b.key as Budget)}
                     className={`p-2.5 rounded-xl font-semibold text-xs border transition-all ${
                       budget === b.key
                         ? 'bg-slate-800 border-amber-400 text-amber-300'
@@ -191,17 +274,17 @@ export default function DecidePage() {
               <DistIcon className="w-4 h-4 text-amber-400" /> 5. Bán kính khoảng cách tối đa?
             </label>
             <div className="grid grid-cols-4 gap-2">
-              {['1KM', '3KM', '5KM', '10KM'].map((d) => (
+              {[{ key: '1KM', label: '1KM' }, { key: '3KM', label: '3KM' }, { key: '5KM', label: '5KM' }, { key: '10KM', label: '>10KM' }].map((option) => (
                 <button
-                  key={d}
-                  onClick={() => setDistance(d as any)}
+                  key={option.key}
+                  onClick={() => setDistance(option.key as Distance)}
                   className={`p-2.5 rounded-xl font-semibold text-xs border transition-all text-center ${
-                    distance === d
+                    distance === option.key
                       ? 'bg-slate-800 border-amber-400 text-amber-300'
                       : 'bg-slate-800/40 border-slate-700 text-slate-400 hover:text-white'
                   }`}
                 >
-                  {d}
+                  {option.label}
                 </button>
               ))}
             </div>
@@ -257,9 +340,14 @@ export default function DecidePage() {
                         <h3 className="text-xl font-bold text-white">{res.name}</h3>
                         <p className="text-xs text-slate-400">{res.address}</p>
                       </div>
-                      <span className="text-xs font-semibold text-slate-300 px-3 py-1 rounded-xl bg-slate-800 border border-slate-700">
-                        {res.priceRange}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-cyan-300 px-3 py-1 rounded-xl bg-cyan-500/10 border border-cyan-500/30">
+                          <DistIcon className="h-3.5 w-3.5" /> {res.distanceKm} km
+                        </span>
+                        <span className="text-xs font-semibold text-slate-300 px-3 py-1 rounded-xl bg-slate-800 border border-slate-700">
+                          {res.priceRange}
+                        </span>
+                      </div>
                     </div>
 
                     {/* Explainable Recommendation Reasons */}

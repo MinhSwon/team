@@ -79,11 +79,11 @@ export function runRecommendationEngine(input: RecommendationInput, candidates: 
 
     // 2. FEATURE SCORING (0 to 100)
     let preferenceScore = 70
-    let groupInteractionScore = Math.min(100, place.groupWantToGoCount * 25 + place.savedByCount * 15)
-    let distanceScore = Math.max(0, 100 - (dist / maxDistance) * 60)
-    let budgetScore = place.priceRange === formatBudgetLabel(input.budget) ? 100 : 75
-    let availabilityScore = place.isOpenNow ? 100 : 60
-    let noveltyScore = place.isVisitedByGroup ? 50 : 95
+    const groupInteractionScore = Math.min(100, place.groupWantToGoCount * 25 + place.savedByCount * 15)
+    const distanceScore = Math.max(0, 100 - (dist / maxDistance) * 60)
+    const budgetScore = place.priceRange === formatBudgetLabel(input.budget) ? 100 : 75
+    const availabilityScore = place.isOpenNow ? 100 : 60
+    const noveltyScore = place.isVisitedByGroup ? 50 : 95
 
     // Activity matching boost
     if (isActivityMatch(input.activity, place.categoryName, place.subcategoryName)) {

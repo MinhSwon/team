@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PlaceDecide
 
-## Getting Started
+Ứng dụng khám phá địa điểm, lưu địa điểm cá nhân/nhóm và gợi ý nơi đi dựa trên hoạt động, ngân sách, thời gian, bán kính và vị trí hiện tại.
 
-First, run the development server:
+## Chạy local
 
-```bash
+Yêu cầu: Node.js 20+, Docker Desktop và PowerShell (Windows).
+
+```powershell
+cd D:\Web\team-main
+Copy-Item .env.example .env
+docker run --name placedecide-db-5433 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=placedecide -p 5433:5432 -d postgres:17
+npm install
+npx prisma migrate deploy
+npm run db:seed
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Mở `http://localhost:3000`. Nếu container đã tồn tại, dùng `docker start placedecide-db-5433` thay cho `docker run`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+`.env` tối thiểu:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5433/placedecide?schema=public"
+AUTH_SECRET="thay-bang-chuoi-ngau-nhien-dai"
+```
 
-## Learn More
+## Các lệnh kiểm tra
 
-To learn more about Next.js, take a look at the following resources:
+```powershell
+npx prisma validate
+npx prisma migrate status
+npx tsc --noEmit
+npm run lint
+npm test
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Chức năng chính
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Đăng ký, đăng nhập, đăng xuất, đổi/quên mật khẩu.
+- Email verification được phát hành để dùng khi cần, nhưng **không bắt buộc**: tài khoản mới ở trạng thái hoạt động và có thể đăng nhập ngay.
+- Khám phá theo danh mục, tìm kiếm, bản đồ Leaflet với icon theo loại địa điểm.
+- “Đi đâu bây giờ?”: nhập địa chỉ hoặc dùng GPS, tính khoảng cách và hỗ trợ lựa chọn `>10KM`.
+- Lưu địa điểm, đánh dấu muốn đi/đã ghé, bộ sưu tập, nhóm và phân quyền nhóm.
+- Import CSV/XLSX/XLS/TXT/DOCX/PDF, xem trước, chọn địa điểm và lưu vào cá nhân hoặc nhóm.
 
-## Deploy on Vercel
+## Import file mẫu
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+File mẫu có sẵn tại `outputs/place-import-sample.xlsx`. Các cột nên có: `Tên`, `Địa chỉ`, `Danh mục`, `Khu vực`, `Giá`, `Mô tả`, `Điện thoại`, `Website`, `Vĩ độ`, `Kinh độ`, `Tags`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Import được giới hạn 15 MB và tối đa 500 dòng để giảm rủi ro khi xử lý file không tin cậy.
+
+## Ghi chú bảo mật
+
+`npm audit --omit=dev` hiện báo một cảnh báo high từ `xlsx@0.18.5`; npm chưa cung cấp bản sửa tự động cho advisory này. Parser đã được giới hạn kích thước/số dòng và chỉ chạy ở server. Khi thư viện upstream có bản sửa tương thích, cần nâng dependency và chạy lại toàn bộ các lệnh kiểm tra ở trên.

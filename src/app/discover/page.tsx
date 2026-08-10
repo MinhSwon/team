@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Navigation from '@/components/Navigation'
 import PlaceCard, { PlaceCardProps } from '@/components/PlaceCard'
 import MapView from '@/components/MapView'
@@ -34,7 +34,7 @@ export default function DiscoverPage() {
     { label: 'Surprise Me', cat: 'ALL' },
   ]
 
-  const fetchPlaces = async () => {
+  const fetchPlaces = useCallback(async () => {
     setIsLoading(true)
     try {
       const res = await fetch(`/api/places?category=${activeCategory}&query=${encodeURIComponent(searchQuery)}`)
@@ -47,11 +47,12 @@ export default function DiscoverPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [activeCategory, searchQuery])
 
   useEffect(() => {
-    fetchPlaces()
-  }, [activeCategory, searchQuery])
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- network response updates the view state.
+    void fetchPlaces()
+  }, [fetchPlaces])
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-24 md:pb-12">

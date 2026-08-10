@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Compass, Sparkles, FolderHeart, Users, FileUp, PlusCircle } from 'lucide-react'
+import AuthControls from './AuthControls'
 
 export default function Navigation({ onOpenAddPlace }: { onOpenAddPlace?: () => void }) {
   const pathname = usePathname()
@@ -65,9 +66,7 @@ export default function Navigation({ onOpenAddPlace }: { onOpenAddPlace?: () => 
               <PlusCircle className="w-4 h-4" />
               <span className="hidden sm:inline">Thêm địa điểm</span>
             </button>
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center font-bold text-white text-sm border-2 border-indigo-400/30">
-              M
-            </div>
+            <AuthControls />
           </div>
         </div>
       </header>

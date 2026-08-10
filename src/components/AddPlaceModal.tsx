@@ -1,4 +1,5 @@
 'use client'
+/* eslint-disable @next/next/no-img-element -- previews can be local object URLs or external URLs. */
 
 import { useState } from 'react'
 import { X, MapPin, AlertCircle, PlusCircle, Sparkles, Image as ImageIcon, Trash2, Upload } from 'lucide-react'
@@ -7,14 +8,16 @@ interface AddPlaceModalProps {
   isOpen: boolean
   onClose: () => void
   onSuccess?: () => void
+  groupId?: string
+  defaultDestination?: 'PERSONAL' | 'GROUP'
 }
 
-export default function AddPlaceModal({ isOpen, onClose, onSuccess }: AddPlaceModalProps) {
+export default function AddPlaceModal({ isOpen, onClose, onSuccess, groupId, defaultDestination = 'PERSONAL' }: AddPlaceModalProps) {
   const [name, setName] = useState('')
   const [address, setAddress] = useState('')
   const [category, setCategory] = useState('Cafe')
   const [price, setPrice] = useState('100–300k')
-  const [destination, setDestination] = useState<'PERSONAL' | 'GROUP'>('GROUP')
+  const [destination, setDestination] = useState<'PERSONAL' | 'GROUP'>(defaultDestination)
   const [note, setNote] = useState('')
   const [images, setImages] = useState<string[]>([])
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null)
@@ -31,19 +34,16 @@ export default function AddPlaceModal({ isOpen, onClose, onSuccess }: AddPlaceMo
     }
   }
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0) return
 
-    Array.from(files).forEach((file) => {
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setImages((prev) => [...prev, reader.result as string])
-        }
-      }
-      reader.readAsDataURL(file)
-    })
+    for (const file of Array.from(files)) {
+      const formData = new FormData(); formData.append('file', file)
+      const response = await fetch('/api/uploads', { method: 'POST', body: formData })
+      const data = await response.json()
+      if (data.success) setImages((prev) => [...prev, data.url])
+    }
   }
 
   const handleRemoveImage = (index: number) => {
@@ -56,7 +56,9 @@ export default function AddPlaceModal({ isOpen, onClose, onSuccess }: AddPlaceMo
 
     setIsSubmitting(true)
     try {
-      await fetch('/api/places', {
+      const geocodeResponse = await fetch(`/api/geocode?address=${encodeURIComponent(`${address}, Hồ Chí Minh`)}`)
+      const geocode = await geocodeResponse.json()
+      const response = await fetch('/api/places', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -68,9 +70,21 @@ export default function AddPlaceModal({ isOpen, onClose, onSuccess }: AddPlaceMo
           description: note,
           addedBy: 'Bạn',
           note,
+          destination,
+          groupId,
+          latitude: geocode.latitude,
+          longitude: geocode.longitude,
           images: images.length > 0 ? images : ['https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=800'],
         }),
       })
+      const data = await response.json()
+      if (data.success && data.place?.id) {
+        if (destination === 'GROUP' && groupId) {
+          await fetch(`/api/groups/${groupId}/saved`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ placeId: data.place.id, status: 'WANT_TO_GO', note }) })
+        } else {
+          await fetch('/api/saved', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ placeId: data.place.id, status: 'WANT_TO_GO', note }) })
+        }
+      }
 
       setIsSubmitting(false)
       setName('')

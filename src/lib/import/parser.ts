@@ -18,97 +18,70 @@ export interface ExtractedCandidate {
   confidenceScore: number
 }
 
-/**
- * Normalizes raw string data extracted from CSV/XLSX/PDF/DOCX/TXT files into candidate structures.
- */
+const removeDiacritics = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+const cleanText = (value: unknown) => typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim()
+
 export async function parseFileContent(buffer: Buffer, fileType: string): Promise<ExtractedCandidate[]> {
-  const typeLower = fileType.toLowerCase()
-
-  if (typeLower.endsWith('csv') || typeLower === 'csv') {
-    return parseCsvBuffer(buffer)
-  }
-  if (typeLower.endsWith('xlsx') || typeLower.endsWith('xls') || typeLower === 'xlsx') {
-    return parseXlsxBuffer(buffer)
-  }
-  if (typeLower.endsWith('txt') || typeLower === 'txt') {
-    return parseTxtBuffer(buffer)
-  }
-  if (typeLower.endsWith('docx') || typeLower === 'docx') {
-    return parseDocxBuffer(buffer)
-  }
-  if (typeLower.endsWith('pdf') || typeLower === 'pdf') {
-    return parsePdfBuffer(buffer)
-  }
-
-  // Fallback to text parsing
+  const type = fileType.toLowerCase().replace(/^\./, '')
+  if (type === 'csv') return parseCsvBuffer(buffer)
+  if (type === 'xlsx' || type === 'xls') return parseXlsxBuffer(buffer)
+  if (type === 'docx') return parseDocxBuffer(buffer)
+  if (type === 'pdf') return parsePdfBuffer(buffer)
   return parseTxtBuffer(buffer)
 }
 
-function parseCsvBuffer(buffer: Buffer): ExtractedCandidate[] {
-  const csvString = buffer.toString('utf-8')
-  const records = parseCsv(csvString, {
-    columns: true,
-    skip_empty_lines: true,
-    trim: true,
-  }) as Record<string, string>[]
-
-  return records.map((row) => extractCandidateFromRecord(row))
+function parseCsvBuffer(buffer: Buffer) {
+  const records = parseCsv(buffer.toString('utf8'), { columns: true, skip_empty_lines: true, trim: true, bom: true }) as Record<string, unknown>[]
+  return records.map((row) => extractCandidateFromRecord(row)).filter((candidate) => candidate.extractedName.length >= 2)
 }
 
-function parseXlsxBuffer(buffer: Buffer): ExtractedCandidate[] {
+function parseXlsxBuffer(buffer: Buffer) {
   const workbook = XLSX.read(buffer, { type: 'buffer' })
-  const firstSheetName = workbook.SheetNames[0]
-  const worksheet = workbook.Sheets[firstSheetName]
-  const records = XLSX.utils.sheet_to_json<Record<string, string>>(worksheet)
-
-  return records.map((row) => extractCandidateFromRecord(row))
+  const sheet = workbook.Sheets[workbook.SheetNames[0]]
+  if (!sheet) return []
+  const records = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+  return records.map((row) => extractCandidateFromRecord(row)).filter((candidate) => candidate.extractedName.length >= 2)
 }
 
-async function parseDocxBuffer(buffer: Buffer): Promise<ExtractedCandidate[]> {
+async function parseDocxBuffer(buffer: Buffer) {
   const result = await mammoth.extractRawText({ buffer })
   return parseRawTextLines(result.value)
 }
 
-async function parsePdfBuffer(buffer: Buffer): Promise<ExtractedCandidate[]> {
+async function parsePdfBuffer(buffer: Buffer) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pdfParse = require('pdf-parse')
   const pdfData = await pdfParse(buffer)
   return parseRawTextLines(pdfData.text)
 }
 
-function parseTxtBuffer(buffer: Buffer): ExtractedCandidate[] {
-  const text = buffer.toString('utf-8')
-  return parseRawTextLines(text)
+function parseTxtBuffer(buffer: Buffer) {
+  return parseRawTextLines(buffer.toString('utf8'))
 }
 
-function extractCandidateFromRecord(row: Record<string, string>): ExtractedCandidate {
-  // Flexible column key matching
-  const findValue = (keys: string[]) => {
-    for (const key of Object.keys(row)) {
-      const lower = key.toLowerCase()
-      if (keys.some((k) => lower.includes(k))) {
-        return row[key]?.toString().trim()
-      }
-    }
-    return undefined
+function extractCandidateFromRecord(row: Record<string, unknown>): ExtractedCandidate {
+  const normalizedEntries = Object.entries(row).map(([key, value]) => [removeDiacritics(key), cleanText(value)] as const)
+  const findValue = (aliases: string[]) => {
+    const normalizedAliases = aliases.map(removeDiacritics)
+    return normalizedEntries.find(([key, value]) => value && normalizedAliases.some((alias) => key === alias || key.includes(alias)))?.[1] || ''
   }
 
-  const name = findValue(['tên', 'name', 'địa điểm', 'place', 'tiêu đề']) || Object.values(row)[0] || 'Địa điểm chưa tên'
-  const address = findValue(['địa chỉ', 'address', 'vị trí', 'location'])
-  const area = findValue(['quận', 'khu vực', 'area', 'district', 'thành phố'])
-  const price = findValue(['giá', 'price', 'chi phí', 'budget'])
-  const category = findValue(['loại', 'danh mục', 'category', 'type'])
-  const notes = findValue(['ghi chú', 'mô tả', 'note', 'description', 'review', 'comment'])
-
+  const values = normalizedEntries.map(([, value]) => value).filter(Boolean)
+  const name = findValue(['ten', 'name', 'dia diem', 'place', 'title']) || values[0] || 'Địa điểm chưa tên'
+  const address = findValue(['dia chi', 'address', 'vi tri', 'location'])
+  const area = findValue(['quan', 'khu vuc', 'area', 'district', 'thanh pho'])
+  const price = findValue(['gia', 'price', 'chi phi', 'budget'])
+  const category = findValue(['loai', 'danh muc', 'category', 'type'])
+  const notes = findValue(['ghi chu', 'mo ta', 'note', 'description', 'review', 'comment'])
   const autoCat = autoCategorizePlace(name, address, notes, category)
 
   return {
     extractedName: name,
     extractedAddress: address || 'Chưa rõ địa chỉ',
-    extractedArea: area || (address ? extractAreaFromAddress(address) : 'TP. Hồ Chí Minh'),
+    extractedArea: area || extractAreaFromAddress(address),
     extractedPrice: price || '100–300k',
-    extractedCategory: category,
-    extractedNotes: notes,
+    extractedCategory: category || undefined,
+    extractedNotes: notes || undefined,
     extractedTags: autoCat.tags,
     suggestedCategory: autoCat.category,
     suggestedTags: autoCat.tags,
@@ -117,41 +90,36 @@ function extractCandidateFromRecord(row: Record<string, string>): ExtractedCandi
 }
 
 function parseRawTextLines(text: string): ExtractedCandidate[] {
-  const lines = text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 2)
-
-  const candidates: ExtractedCandidate[] = []
-
-  for (const line of lines) {
-    // Basic line extraction heuristic
-    const parts = line.split(/[-–|:]/).map((p) => p.trim())
+  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 2).map((line) => {
+    const parts = line.split(/\s*(?:\||;|—|–|:)\s*/).map((part) => part.trim()).filter(Boolean)
     const name = parts[0]
     const addressOrNote = parts.slice(1).join(' - ')
-
-    if (name && name.length >= 3) {
-      const autoCat = autoCategorizePlace(name, addressOrNote, addressOrNote)
-      candidates.push({
-        rawText: line,
-        extractedName: name,
-        extractedAddress: addressOrNote.includes('Quận') || addressOrNote.includes('Đường') ? addressOrNote : 'TP. Hồ Chí Minh',
-        extractedArea: extractAreaFromAddress(addressOrNote),
-        extractedPrice: '100–300k',
-        extractedNotes: addressOrNote,
-        extractedTags: autoCat.tags,
-        suggestedCategory: autoCat.category,
-        suggestedTags: autoCat.tags,
-        confidenceScore: autoCat.confidence,
-      })
+    const autoCat = autoCategorizePlace(name, addressOrNote, addressOrNote)
+    return {
+      rawText: line,
+      extractedName: name,
+      extractedAddress: looksLikeAddress(addressOrNote) ? addressOrNote : 'TP. Hồ Chí Minh',
+      extractedArea: extractAreaFromAddress(addressOrNote),
+      extractedPrice: '100–300k',
+      extractedNotes: addressOrNote || undefined,
+      extractedTags: autoCat.tags,
+      suggestedCategory: autoCat.category,
+      suggestedTags: autoCat.tags,
+      confidenceScore: autoCat.confidence,
     }
-  }
-
-  return candidates
+  }).filter((candidate) => candidate.extractedName.length >= 3)
 }
 
-function extractAreaFromAddress(address: string): string {
+function looksLikeAddress(value: string) {
+  const normalized = removeDiacritics(value)
+  return /\d/.test(value) || /(quan|q\.?|phuong|p\.?|duong|tp\.?|thanh pho|hcm|ho chi minh|thu duc|binh thanh)/i.test(normalized)
+}
+
+function extractAreaFromAddress(address: string) {
   if (!address) return 'TP. Hồ Chí Minh'
-  const match = address.match(/(Quận\s*\d+|Quận\s*[\w\s]+|Bình Thạnh|Thủ Đức|Gò Vấp|Tân Bình|Phú Nhuận|Tân Phú)/i)
-  return match ? match[0] : 'TP. Hồ Chí Minh'
+  const normalized = removeDiacritics(address)
+  const match = normalized.match(/(quan\s*\d+|quan\s*[a-z\s]+|binh thanh|thu duc|go vap|tan binh|phu nhuan|tan phu)/i)
+  if (!match) return 'TP. Hồ Chí Minh'
+  const originalMatch = address.match(/(Quận\s*\d+|Quận\s*[\p{L}\s]+|Bình Thạnh|Thủ Đức|Gò Vấp|Tân Bình|Phú Nhuận|Tân Phú)/iu)
+  return originalMatch?.[0] || match[0]
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Navigation from '@/components/Navigation'
 import { FileUp, Sparkles, CheckCircle2, AlertTriangle, FileText, Check, Trash2, Users, User, ArrowRight } from 'lucide-react'
 
@@ -20,9 +20,17 @@ interface Candidate {
   selected?: boolean
 }
 
+interface ImportGroup {
+  id: string
+  name: string
+}
+
 export default function ImportPage() {
   const [file, setFile] = useState<File | null>(null)
-  const [destination, setDestination] = useState<'PERSONAL' | 'GROUP'>('GROUP')
+  const [destination, setDestination] = useState<'PERSONAL' | 'GROUP'>('PERSONAL')
+  const [groupId, setGroupId] = useState('')
+  const [groups, setGroups] = useState<ImportGroup[]>([])
+  const [errorMessage, setErrorMessage] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [batchData, setBatchData] = useState<{
     batchId: string
@@ -38,14 +46,27 @@ export default function ImportPage() {
   const [isImporting, setIsImporting] = useState(false)
   const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null)
 
+  useEffect(() => {
+    if (destination !== 'GROUP' || groups.length) return
+    fetch('/api/groups').then((response) => response.json()).then((data) => {
+      if (data.success) setGroups(data.groups.map((group: ImportGroup) => ({ id: group.id, name: group.name })))
+    }).catch(() => setErrorMessage('Không thể tải danh sách nhóm.'))
+  }, [destination, groups.length])
+
   const handleFileUpload = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!file) return
+    if (destination === 'GROUP' && !groupId) {
+      setErrorMessage('Hãy chọn nhóm trước khi import.')
+      return
+    }
 
     setIsProcessing(true)
+    setErrorMessage('')
     const formData = new FormData()
     formData.append('file', file)
     formData.append('destination', destination)
+    if (destination === 'GROUP') formData.append('groupId', groupId)
 
     try {
       const res = await fetch('/api/imports', {
@@ -56,9 +77,9 @@ export default function ImportPage() {
       if (data.success) {
         setBatchData(data)
         setCandidates(data.candidates.map((c: Candidate) => ({ ...c, selected: c.status !== 'SKIPPED' })))
-      }
+      } else setErrorMessage(data.error || 'Không thể đọc file.')
     } catch {
-      // Handled
+      setErrorMessage('Không thể kết nối tới máy chủ import.')
     } finally {
       setIsProcessing(false)
     }
@@ -80,14 +101,14 @@ export default function ImportPage() {
       const res = await fetch('/api/imports', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ candidates: selectedList, destination }),
+        body: JSON.stringify({ batchId: batchData?.batchId, candidates: selectedList }),
       })
       const data = await res.json()
       if (data.success) {
         setImportSuccessMsg(data.message)
-      }
+      } else setErrorMessage(data.error || 'Không thể hoàn tất import.')
     } catch {
-      // Handled
+      setErrorMessage('Không thể kết nối tới máy chủ import.')
     } finally {
       setIsImporting(false)
     }
@@ -129,7 +150,7 @@ export default function ImportPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDestination('PERSONAL')}
+                  onClick={() => { setDestination('PERSONAL'); setGroupId('') }}
                   className={`flex items-center justify-center gap-2 p-3 rounded-2xl font-bold text-xs border transition-all ${
                     destination === 'PERSONAL'
                       ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-600/30'
@@ -140,6 +161,17 @@ export default function ImportPage() {
                 </button>
               </div>
             </div>
+
+            {destination === 'GROUP' && (
+              <div className="max-w-md space-y-2">
+                <label htmlFor="import-group" className="text-xs font-bold uppercase tracking-wider text-slate-400">Chọn nhóm nhận dữ liệu</label>
+                <select id="import-group" value={groupId} onChange={(event) => setGroupId(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-3 text-sm text-white outline-none focus:border-indigo-400">
+                  <option value="">-- Chọn nhóm --</option>
+                  {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                </select>
+              </div>
+            )}
+            {errorMessage && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{errorMessage}</div>}
 
             {/* Dropzone */}
             <div className="border-2 border-dashed border-slate-700 hover:border-amber-400/60 rounded-3xl p-8 sm:p-12 text-center transition-all bg-slate-950/40">
@@ -218,7 +250,7 @@ export default function ImportPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
-                    {candidates.map((cand, idx) => (
+                    {candidates.map((cand) => (
                       <tr key={cand.id} className="hover:bg-slate-800/40 transition-colors">
                         <td className="p-4">
                           <input

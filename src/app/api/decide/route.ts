@@ -1,33 +1,36 @@
 import { NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { runRecommendationEngine, RecommendationInput, PlaceRawData } from '@/lib/recommendation/engine'
-import { INITIAL_MOCK_PLACES } from '@/lib/mockData'
 import { prisma } from '@/lib/db'
+import { errorResponse, requireUser } from '@/lib/authorization'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: Request) {
   try {
-    const body: RecommendationInput = await request.json()
+    const user = await requireUser()
+    const rawBody = await request.json() as Partial<RecommendationInput> & { groupId?: unknown }
+    const body: RecommendationInput = {
+      who: rawBody.who as RecommendationInput['who'],
+      activity: rawBody.activity as RecommendationInput['activity'],
+      time: rawBody.time as RecommendationInput['time'],
+      budget: rawBody.budget as RecommendationInput['budget'],
+      distance: rawBody.distance as RecommendationInput['distance'],
+      ...(Number.isFinite(rawBody.userLat) ? { userLat: Number(rawBody.userLat) } : {}),
+      ...(Number.isFinite(rawBody.userLng) ? { userLng: Number(rawBody.userLng) } : {}),
+    }
 
-    // Fetch places from DB or mock data fallback
-    let candidatePlaces: PlaceRawData[] = INITIAL_MOCK_PLACES.map((p) => ({
-      ...p,
-      isVisitedByGroup: p.isVisitedByGroup || false,
-    }))
+    const dbPlaces = await prisma.place.findMany({
+      include: {
+        category: true,
+        subcategory: true,
+        images: true,
+        groupSaved: true,
+        userSaved: true,
+      },
+    })
 
-    try {
-      const dbPlaces = await prisma.place.findMany({
-        include: {
-          category: true,
-          subcategory: true,
-          images: true,
-          groupSaved: true,
-          userSaved: true,
-        },
-      })
-
-      if (dbPlaces.length > 0) {
-        candidatePlaces = dbPlaces.map((p: any) => ({
+    const candidatePlaces: PlaceRawData[] = dbPlaces.map((p) => ({
           id: p.id,
           name: p.name,
           address: p.address,
@@ -41,28 +44,25 @@ export async function POST(request: Request) {
           description: p.description || '',
           phone: p.phone || '',
           website: p.website || '',
-          images: p.images?.map((i: any) => i.url) || [],
+          images: p.images.map((i) => i.url),
           tags: [],
           isOpenNow: true,
-          groupWantToGoCount: p.groupSaved?.filter((g: any) => g.status === 'WANT_TO_GO').length || 0,
-          savedByCount: (p.userSaved?.length || 0) + (p.groupSaved?.length || 0),
-          isVisitedByGroup: p.groupSaved?.some((g: any) => g.status === 'VISITED') || false,
+          groupWantToGoCount: p.groupSaved.filter((g) => g.status === 'WANT_TO_GO').length,
+          savedByCount: p.userSaved.length + p.groupSaved.length,
+          isVisitedByGroup: p.groupSaved.some((g) => g.status === 'VISITED'),
         }))
-      }
-    } catch {
-      // Use INITIAL_MOCK_PLACES
-    }
 
     const recommendations = runRecommendationEngine(body, candidatePlaces)
 
+    const groupId = typeof rawBody.groupId === 'string' ? rawBody.groupId : null
+    const session = await prisma.recommendationSession.create({ data: { userId: user.id, groupId, whoContext: body.who, activityContext: body.activity, timeContext: body.time, budgetContext: body.budget, distanceContext: body.distance, results: recommendations as unknown as Prisma.InputJsonValue } })
+
     return NextResponse.json({
       success: true,
-      sessionId: 'rec_' + Date.now(),
+      sessionId: session.id,
       whoContext: body.who,
       activityContext: body.activity,
       results: recommendations,
     })
-  } catch (error: unknown) {
-    return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 })
-  }
+  } catch (error: unknown) { return errorResponse(error) }
 }

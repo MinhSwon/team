@@ -41,3 +41,17 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# local editor/assistant metadata
+/.agents/
+/.claude/
+/.windsurf/
+
+# generated import inspection files
+/outputs/node_modules/
+/outputs/*.inspect.ndjson
+/public/uploads/
+
+# local diagnostic artifacts
+lint-report*.json
+audit-report.json
